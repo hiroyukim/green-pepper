@@ -11,7 +11,7 @@ import (
 var rootCmd = &cobra.Command{
 	Use:           "gp",
 	Short:         "gp is a lightweight CLI API client",
-	Long:          "gp sends HTTP requests defined in a template file, optionally driving them from a CSV data file (one request per row) — the CLI equivalent of Postman's Collection Runner.",
+	Long:          "gp sends HTTP requests defined in a template file, optionally driving them from a CSV data file (one request per row).",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }

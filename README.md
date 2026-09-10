@@ -1,6 +1,6 @@
 # gp
 
-PostmanのCollection Runner相当の機能を持つ、軽量なCLI APIクライアント。
+軽量なCLI APIクライアント。
 1つのリクエストテンプレートをCSVの各行で変数展開しながら繰り返し実行し、結果を表で表示する。
 
 ## Build
