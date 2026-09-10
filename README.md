@@ -64,6 +64,21 @@ gp run examples/request.yaml --data examples/users.csv --env examples/env.yaml
 2/3 passed
 ```
 
+## Web UI
+
+CSVファイルをブラウザからアップロードして実行したい場合は `gp serve` を使う。
+リクエストテンプレートと環境変数はコマンドの起動時に指定し、ブラウザ側ではCSVのアップロードと実行だけを行う。
+
+```sh
+gp serve <request-file> [--env <env-file>] [--port <port>] [--timeout <duration>]
+```
+
+```sh
+gp serve examples/request.yaml --env examples/env.yaml --port 8080
+```
+
+`http://localhost:8080` を開き、CSVファイルを選んで「実行」を押すと、`gp run` と同じ結果が表で表示される。
+
 ## License
 
 [Apache License 2.0](LICENSE)

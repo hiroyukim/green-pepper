@@ -1,0 +1,14 @@
+{{define "content"}}
+{{if .Error}}<div class="error-box">{{.Error}}</div>{{end}}
+<div class="card">
+  <p class="meta">
+    Request template: <code>{{.RequestPath}}</code>
+    {{if .EnvPath}}&nbsp;/&nbsp;Env: <code>{{.EnvPath}}</code>{{end}}
+  </p>
+  <form action="/run" method="post" enctype="multipart/form-data">
+    <label for="csv">CSVファイルをアップロード（ヘッダー行が変数名）</label>
+    <input type="file" id="csv" name="csv" accept=".csv" required>
+    <button type="submit">実行</button>
+  </form>
+</div>
+{{end}}

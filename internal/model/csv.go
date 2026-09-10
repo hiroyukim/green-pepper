@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/csv"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -21,20 +22,29 @@ func LoadCSV(path string) (*CSVData, error) {
 	}
 	defer f.Close()
 
-	r := csv.NewReader(f)
-	records, err := r.ReadAll()
+	data, err := ParseCSV(f)
 	if err != nil {
-		return nil, fmt.Errorf("parsing data file: %w", err)
+		return nil, fmt.Errorf("data file %s: %w", path, err)
+	}
+	return data, nil
+}
+
+// ParseCSV parses CSV content (header row of variable names, followed by one
+// row per request execution) from an arbitrary reader, e.g. an uploaded file.
+func ParseCSV(r io.Reader) (*CSVData, error) {
+	records, err := csv.NewReader(r).ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("parsing CSV: %w", err)
 	}
 	if len(records) < 1 {
-		return nil, fmt.Errorf("data file %s: missing header row", path)
+		return nil, fmt.Errorf("missing header row")
 	}
 
 	header := records[0]
 	rows := make([]map[string]string, 0, len(records)-1)
 	for i, rec := range records[1:] {
 		if len(rec) != len(header) {
-			return nil, fmt.Errorf("data file %s: row %d has %d columns, want %d", path, i+2, len(rec), len(header))
+			return nil, fmt.Errorf("row %d has %d columns, want %d", i+2, len(rec), len(header))
 		}
 		row := make(map[string]string, len(header))
 		for j, col := range header {

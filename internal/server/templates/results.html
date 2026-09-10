@@ -1,0 +1,34 @@
+{{define "content"}}
+<div class="card">
+  <p class="meta">
+    Request template: <code>{{.RequestPath}}</code>
+    {{if .EnvPath}}&nbsp;/&nbsp;Env: <code>{{.EnvPath}}</code>{{end}}
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Status</th>
+        <th>Time</th>
+        <th>Size</th>
+        {{range .Columns}}<th>{{.}}</th>{{end}}
+        <th>Error</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Rows}}
+      <tr>
+        <td>{{.Index}}</td>
+        <td class="{{if .OK}}ok{{else}}fail{{end}}">{{.Status}}</td>
+        <td>{{.Duration}}</td>
+        <td>{{.Bytes}}</td>
+        {{range .Values}}<td>{{.}}</td>{{end}}
+        <td>{{.Err}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <p class="summary">{{.Passed}}/{{.Total}} passed</p>
+</div>
+<p><a href="/">&larr; 別のCSVで実行する</a></p>
+{{end}}
