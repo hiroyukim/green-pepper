@@ -1,5 +1,8 @@
 # gp
 
+[![CI](https://github.com/hiroyukim/green-pepper/actions/workflows/ci.yml/badge.svg)](https://github.com/hiroyukim/green-pepper/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 軽量なCLI APIクライアント。
 1つのリクエストテンプレートをCSVの各行で変数展開しながら繰り返し実行し、結果を表で表示する。
 
@@ -60,3 +63,7 @@ gp run examples/request.yaml --data examples/users.csv --env examples/env.yaml
 
 2/3 passed
 ```
+
+## License
+
+[Apache License 2.0](LICENSE)
