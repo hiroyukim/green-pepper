@@ -1,0 +1,4 @@
+method: GET
+url: "{{base_url}}/users/{{id}}"
+headers:
+  Accept: application/json
