@@ -79,6 +79,14 @@ gp serve examples/request.yaml --env examples/env.yaml --port 8080
 
 `http://localhost:8080` を開き、CSVファイルを選んで「実行」を押すと、`gp run` と同じ結果が表で表示される。
 
+## Releases
+
+`v*` 形式のタグをpushすると、GitHub Actions ([goreleaser](https://goreleaser.com/)) が
+linux/darwin/windows × amd64/arm64 のバイナリをビルドし、GitHub Releaseに自動でアップロードする
+([.github/workflows/release.yml](.github/workflows/release.yml))。
+
+ビルド済みバイナリは [Releases](https://github.com/hiroyukim/green-pepper/releases) から取得できる。
+
 ## License
 
 [Apache License 2.0](LICENSE)
