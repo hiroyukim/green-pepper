@@ -40,6 +40,50 @@
   </div>
 
   <div class="field">
+    <label for="auth-type">Authorization</label>
+    <select id="auth-type">
+      <option value="none">No Auth</option>
+      <option value="basic">Basic Auth</option>
+      <option value="bearer">Bearer Token</option>
+      <option value="apikey">API Key</option>
+    </select>
+  </div>
+
+  <div class="row" id="auth-basic-fields" hidden>
+    <div class="field">
+      <label for="auth-basic-username">Username</label>
+      <input type="text" id="auth-basic-username">
+    </div>
+    <div class="field">
+      <label for="auth-basic-password">Password</label>
+      <input type="text" id="auth-basic-password">
+    </div>
+  </div>
+
+  <div class="field" id="auth-bearer-fields" hidden>
+    <label for="auth-bearer-token">Token</label>
+    <input type="text" id="auth-bearer-token">
+  </div>
+
+  <div class="row" id="auth-apikey-fields" hidden>
+    <div class="field">
+      <label for="auth-apikey-key">Key</label>
+      <input type="text" id="auth-apikey-key" placeholder="X-API-Key">
+    </div>
+    <div class="field">
+      <label for="auth-apikey-value">Value</label>
+      <input type="text" id="auth-apikey-value">
+    </div>
+    <div class="field">
+      <label for="auth-apikey-location">追加先</label>
+      <select id="auth-apikey-location">
+        <option value="header">Header</option>
+        <option value="query">Query Param</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="field">
     <label>Query Params</label>
     <table id="params-table">
       <thead>
@@ -323,6 +367,130 @@
   });
 
   parseUrlIntoParams();
+})();
+</script>
+
+<script>
+(function () {
+  // Authorization section: lets the user pick No Auth / Basic Auth / Bearer
+  // Token / API Key and have the corresponding header (or query param, for
+  // API Key) generated automatically instead of hand-writing it into the
+  // Headers textarea. State lives only in these DOM inputs for the lifetime
+  // of the page; nothing is persisted server-side.
+  var form = document.getElementById('request-form');
+  var headersField = document.getElementById('headers');
+  var urlField = document.getElementById('url');
+  var authType = document.getElementById('auth-type');
+  var basicFields = document.getElementById('auth-basic-fields');
+  var bearerFields = document.getElementById('auth-bearer-fields');
+  var apikeyFields = document.getElementById('auth-apikey-fields');
+  var basicUsername = document.getElementById('auth-basic-username');
+  var basicPassword = document.getElementById('auth-basic-password');
+  var bearerToken = document.getElementById('auth-bearer-token');
+  var apikeyKey = document.getElementById('auth-apikey-key');
+  var apikeyValue = document.getElementById('auth-apikey-value');
+  var apikeyLocation = document.getElementById('auth-apikey-location');
+
+  // Remembers the API key name most recently injected into the headers
+  // textarea / URL query string so that renaming the key (while staying on
+  // API Key auth) still cleans up the previous line/param on the next
+  // submit, not just whatever name is currently typed in.
+  var lastApiKeyHeaderName = null;
+  var lastApiKeyQueryName = null;
+
+  function updateAuthVisibility() {
+    basicFields.hidden = authType.value !== 'basic';
+    bearerFields.hidden = authType.value !== 'bearer';
+    apikeyFields.hidden = authType.value !== 'apikey';
+  }
+
+  authType.addEventListener('change', updateAuthVisibility);
+  updateAuthVisibility();
+
+  // Removes any header line whose key (case-insensitive, split on the first
+  // ":") matches one of the given names. Used to keep the shared #headers
+  // textarea free of stale/duplicate auto-generated Authorization / API-Key
+  // lines across repeated submits and auth-type switches.
+  function stripHeaderLines(text, names) {
+    var lowerNames = names.filter(Boolean).map(function (n) { return n.toLowerCase(); });
+    if (lowerNames.length === 0) return text;
+    return text.split('\n').filter(function (line) {
+      var idx = line.indexOf(':');
+      if (idx === -1) return true;
+      var key = line.slice(0, idx).trim().toLowerCase();
+      return lowerNames.indexOf(key) === -1;
+    }).join('\n');
+  }
+
+  function appendHeaderLine(text, line) {
+    var trimmed = text.replace(/\n+$/, '');
+    return trimmed === '' ? line : trimmed + '\n' + line;
+  }
+
+  // Removes any "key=value" pair from a raw (already-split-off) query
+  // string whose key matches name, case-insensitively. Deliberately manual
+  // string handling (not URL/URLSearchParams) since the URL field may hold
+  // double-curly-brace template placeholders or a templated origin.
+  function stripQueryParam(query, name) {
+    if (!name) return query;
+    var lowerName = name.toLowerCase();
+    return query.split('&').filter(function (part) {
+      if (part === '') return false;
+      var eq = part.indexOf('=');
+      var key = (eq === -1 ? part : part.slice(0, eq)).toLowerCase();
+      return key !== lowerName;
+    }).join('&');
+  }
+
+  // Runs on every form submit (send / run / download alike, since they all
+  // post the same #headers/#url fields): folds the current Authorization
+  // selection into #headers and #url, replacing whatever this same function
+  // injected on a previous submit.
+  function applyAuthToRequest() {
+    var type = authType.value;
+    var headersText = headersField.value;
+    var currentKeyName = apikeyKey.value.trim();
+
+    headersText = stripHeaderLines(headersText, ['authorization', currentKeyName, lastApiKeyHeaderName]);
+
+    var urlText = urlField.value;
+    var qIdx = urlText.indexOf('?');
+    var base = qIdx === -1 ? urlText : urlText.slice(0, qIdx);
+    var query = qIdx === -1 ? '' : urlText.slice(qIdx + 1);
+    query = stripQueryParam(query, currentKeyName);
+    query = stripQueryParam(query, lastApiKeyQueryName);
+
+    lastApiKeyHeaderName = null;
+    lastApiKeyQueryName = null;
+
+    if (type === 'basic') {
+      var user = basicUsername.value || '';
+      var pass = basicPassword.value || '';
+      headersText = appendHeaderLine(headersText, 'Authorization: Basic ' + btoa(user + ':' + pass));
+    } else if (type === 'bearer') {
+      headersText = appendHeaderLine(headersText, 'Authorization: Bearer ' + (bearerToken.value || ''));
+    } else if (type === 'apikey' && currentKeyName) {
+      var keyValue = apikeyValue.value || '';
+      if (apikeyLocation.value === 'query') {
+        query = query ? query + '&' + currentKeyName + '=' + keyValue : currentKeyName + '=' + keyValue;
+        lastApiKeyQueryName = currentKeyName;
+      } else {
+        headersText = appendHeaderLine(headersText, currentKeyName + ': ' + keyValue);
+        lastApiKeyHeaderName = currentKeyName;
+      }
+    }
+
+    headersField.value = headersText;
+    urlField.value = query ? base + '?' + query : base;
+  }
+
+  form.addEventListener('submit', function () {
+    applyAuthToRequest();
+  });
+
+  // Exposed only so a standalone test harness (no browser available) can
+  // exercise the exact injection logic; unused by the page itself.
+  form._applyAuthForTest = applyAuthToRequest;
 })();
 </script>
 
