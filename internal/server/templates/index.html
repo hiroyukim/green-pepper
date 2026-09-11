@@ -191,7 +191,17 @@
     </tbody>
   </table>
   {{end}}
-  <pre>{{.SendResult.Body}}</pre>
+  <div class="response-toolbar" id="response-toolbar">
+    <div class="actions response-toolbar-tabs">
+      <button type="button" class="secondary response-tab" id="response-tab-pretty" data-view="pretty"><span class="icon">data_object</span>Pretty</button>
+      <button type="button" class="secondary response-tab" id="response-tab-raw" data-view="raw"><span class="icon">notes</span>Raw</button>
+    </div>
+    <div class="actions response-toolbar-buttons">
+      <button type="button" class="secondary" id="response-copy-btn"><span class="icon">content_copy</span>コピー</button>
+      <button type="button" class="secondary" id="response-download-btn"><span class="icon">download</span>ダウンロード</button>
+    </div>
+  </div>
+  <pre id="response-body">{{.SendResult.Body}}</pre>
   {{end}}
 </div>
 {{end}}
@@ -928,6 +938,164 @@
   bodyTypeSelect.addEventListener('change', applyBodyType);
 
   applyBodyType();
+})();
+</script>
+
+<script>
+(function () {
+  var body = document.getElementById('response-body');
+  if (!body) return; // response block only renders after a "send" action
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  // The browser already un-escapes HTML entities when reading textContent,
+  // so this is the real original response body text.
+  var rawText = body.textContent;
+
+  // Regex-based JSON tokenizer/highlighter (no external library). Matches
+  // strings (optionally followed by a colon, treated as an object key),
+  // booleans, null, and numbers; everything else passes through escaped.
+  function highlightJson(json) {
+    var pattern = /("(\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
+    var out = '';
+    var lastIndex = 0;
+    var match;
+    while ((match = pattern.exec(json)) !== null) {
+      out += escapeHtml(json.slice(lastIndex, match.index));
+      var token = match[0];
+      var cls;
+      if (/^"/.test(token)) {
+        cls = /:\s*$/.test(token) ? 'json-key' : 'json-string';
+      } else if (token === 'true' || token === 'false') {
+        cls = 'json-bool';
+      } else if (token === 'null') {
+        cls = 'json-null';
+      } else {
+        cls = 'json-number';
+      }
+      out += '<span class="' + cls + '">' + escapeHtml(token) + '</span>';
+      lastIndex = pattern.lastIndex;
+    }
+    out += escapeHtml(json.slice(lastIndex));
+    return out;
+  }
+
+  // Try to pretty-print + highlight; both stay null if the body isn't
+  // valid JSON, and callers fall back to raw text without throwing.
+  var prettyText = null;
+  var prettyHtml = null;
+  try {
+    prettyText = JSON.stringify(JSON.parse(rawText), null, 2);
+    prettyHtml = highlightJson(prettyText);
+  } catch (e) {
+    prettyText = null;
+    prettyHtml = null;
+  }
+
+  function contentTypeHeader() {
+    var rows = document.querySelectorAll('.response table tr');
+    for (var i = 0; i < rows.length; i++) {
+      var cells = rows[i].querySelectorAll('td');
+      if (cells.length >= 2 && cells[0].textContent.trim().toLowerCase() === 'content-type') {
+        return cells[1].textContent.toLowerCase();
+      }
+    }
+    return '';
+  }
+
+  var toolbar = document.getElementById('response-toolbar');
+  var tabPretty = document.getElementById('response-tab-pretty');
+  var tabRaw = document.getElementById('response-tab-raw');
+  var copyBtn = document.getElementById('response-copy-btn');
+  var downloadBtn = document.getElementById('response-download-btn');
+  var currentView = 'raw';
+
+  function setView(view) {
+    if (view === 'pretty' && prettyText === null) view = 'raw';
+    currentView = view;
+    if (view === 'pretty') {
+      body.innerHTML = prettyHtml;
+      if (tabPretty) tabPretty.classList.remove('secondary');
+      if (tabRaw) tabRaw.classList.add('secondary');
+    } else {
+      body.textContent = rawText;
+      if (tabRaw) tabRaw.classList.remove('secondary');
+      if (tabPretty) tabPretty.classList.add('secondary');
+    }
+  }
+
+  if (tabPretty && tabRaw) {
+    if (prettyText === null) {
+      tabPretty.disabled = true;
+      tabPretty.title = 'JSONとして解釈できませんでした';
+    }
+    tabPretty.addEventListener('click', function () { setView('pretty'); });
+    tabRaw.addEventListener('click', function () { setView('raw'); });
+  }
+
+  var isJsonContentType = contentTypeHeader().indexOf('json') !== -1;
+  setView(isJsonContentType && prettyText !== null ? 'pretty' : 'raw');
+
+  function currentText() {
+    return currentView === 'pretty' && prettyText !== null ? prettyText : rawText;
+  }
+
+  function showCopyFallback(text) {
+    var existing = document.getElementById('response-copy-fallback');
+    if (existing) existing.remove();
+    var box = document.createElement('textarea');
+    box.id = 'response-copy-fallback';
+    box.readOnly = true;
+    box.rows = 3;
+    box.style.width = '100%';
+    box.style.marginTop = '0.5rem';
+    box.value = text;
+    toolbar.parentNode.insertBefore(box, body);
+    box.focus();
+    box.select();
+  }
+
+  if (copyBtn) {
+    copyBtn.addEventListener('click', function () {
+      var text = currentText();
+      var originalLabel = copyBtn.innerHTML;
+      var restore = function () {
+        setTimeout(function () { copyBtn.innerHTML = originalLabel; }, 1500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+          var fallback = document.getElementById('response-copy-fallback');
+          if (fallback) fallback.remove();
+          copyBtn.innerHTML = '<span class="icon">check</span>コピーしました';
+          restore();
+        }).catch(function () {
+          showCopyFallback(text);
+        });
+      } else {
+        showCopyFallback(text);
+      }
+    });
+  }
+
+  if (downloadBtn) {
+    downloadBtn.addEventListener('click', function () {
+      var text = currentText();
+      var isJson = currentView === 'pretty' && prettyText !== null;
+      var blob = new Blob([text], { type: isJson ? 'application/json' : 'text/plain' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = isJson ? 'response.json' : 'response.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+    });
+  }
 })();
 </script>
 {{end}}
