@@ -6,7 +6,7 @@
 <div class="card">
   <h2><span class="icon">http</span>リクエスト</h2>
   <p class="meta">
-    初期読み込み: <code>{{.RequestPath}}</code>
+    {{if .RequestPath}}初期読み込み: <code>{{.RequestPath}}</code>{{else}}新規リクエスト{{end}}
     {{if .EnvPath}}&nbsp;/&nbsp;Env: <code>{{.EnvPath}}</code>{{end}}
   </p>
 

@@ -2,7 +2,7 @@
 <div class="card">
   <h2><span class="icon">checklist</span>実行結果</h2>
   <p class="meta">
-    Request template: <code>{{.RequestPath}}</code>
+    {{if .RequestPath}}Request template: <code>{{.RequestPath}}</code>{{else}}Request template: 新規リクエスト{{end}}
     {{if .EnvPath}}&nbsp;/&nbsp;Env: <code>{{.EnvPath}}</code>{{end}}
   </p>
   <table>
