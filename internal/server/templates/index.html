@@ -10,6 +10,15 @@
     {{if .EnvPath}}&nbsp;/&nbsp;Env: <code>{{.EnvPath}}</code>{{end}}
   </p>
 
+  <div class="field curl-import">
+    <label for="curl-import-input">cURLからインポート</label>
+    <textarea id="curl-import-input" rows="3" placeholder="curl -X POST 'https://api.example.com/users' -H 'Content-Type: application/json' -d '{&quot;name&quot;:&quot;Alice&quot;}'"></textarea>
+    <div class="actions">
+      <button type="button" id="curl-import-btn" class="secondary"><span class="icon">upload</span>cURLから読み込む</button>
+    </div>
+    <div id="curl-import-error"></div>
+  </div>
+
   <div class="row">
     <div class="field method">
       <label for="method">Method</label>
@@ -81,7 +90,9 @@
   <button type="submit" name="action" value="send"><span class="icon">send</span>単発送信</button>
   <button type="submit" name="action" value="run" class="secondary"><span class="icon">play_arrow</span>CSVで実行</button>
   <button type="submit" name="action" value="download" class="secondary"><span class="icon">download</span>YAMLをダウンロード</button>
+  <button type="button" id="curl-copy-btn" class="secondary"><span class="icon">content_copy</span>cURLとしてコピー</button>
 </div>
+<div id="curl-copy-fallback"></div>
 
 </form>
 
@@ -312,6 +323,221 @@
   });
 
   parseUrlIntoParams();
+})();
+</script>
+
+<script>
+(function () {
+  function shellQuote(value) {
+    return "'" + String(value).replace(/'/g, "'\\''") + "'";
+  }
+
+  // Minimal shell-like tokenizer: handles single-quoted and double-quoted
+  // arguments plus unquoted whitespace-separated words. Not full shell
+  // semantics, but enough for the curl invocations this feature targets.
+  function tokenizeCurlCommand(input) {
+    var tokens = [];
+    var i = 0;
+    var n = input.length;
+    while (i < n) {
+      while (i < n && /\s/.test(input[i])) i++;
+      if (i >= n) break;
+      var token = '';
+      while (i < n && !/\s/.test(input[i])) {
+        var c = input[i];
+        if (c === "'") {
+          i++;
+          while (i < n && input[i] !== "'") {
+            if (input[i] === '\\' && input[i + 1] === "'") {
+              token += "'";
+              i += 2;
+            } else {
+              token += input[i];
+              i++;
+            }
+          }
+          i++;
+        } else if (c === '"') {
+          i++;
+          while (i < n && input[i] !== '"') {
+            if (input[i] === '\\' && (input[i + 1] === '"' || input[i + 1] === '\\')) {
+              token += input[i + 1];
+              i += 2;
+            } else {
+              token += input[i];
+              i++;
+            }
+          }
+          i++;
+        } else if (c === '\\' && i + 1 < n) {
+          token += input[i + 1];
+          i += 2;
+        } else {
+          token += c;
+          i++;
+        }
+      }
+      tokens.push(token);
+    }
+    return tokens;
+  }
+
+  // Flags known to consume a following value that we don't otherwise support;
+  // skipped together with their value so we don't misdetect the value as URL.
+  var CURL_VALUE_FLAGS = [
+    '-u', '--user', '-b', '--cookie', '-e', '--referer', '-A', '--user-agent',
+    '-o', '--output', '--connect-timeout', '--max-time', '-w', '--write-out',
+    '--cacert', '--cert', '--key', '-x', '--proxy', '--limit-rate', '--retry'
+  ];
+
+  function parseCurlCommand(text) {
+    if (!text || !text.trim()) {
+      throw new Error('コマンドを入力してください。');
+    }
+    var normalized = text.trim().replace(/\\\r?\n/g, ' ');
+    var tokens = tokenizeCurlCommand(normalized);
+    if (tokens.length === 0) {
+      throw new Error('コマンドを解析できませんでした。');
+    }
+
+    var idx = (tokens[0] === 'curl') ? 1 : 0;
+    var method = null;
+    var url = null;
+    var headers = [];
+    var dataParts = [];
+
+    while (idx < tokens.length) {
+      var t = tokens[idx];
+      if (t === '-X' || t === '--request') {
+        method = tokens[idx + 1] || method;
+        idx += 2;
+      } else if (t === '-H' || t === '--header') {
+        if (tokens[idx + 1] !== undefined) headers.push(tokens[idx + 1]);
+        idx += 2;
+      } else if (t === '-d' || t === '--data' || t === '--data-raw' || t === '--data-binary' || t === '--data-ascii' || t === '--data-urlencode') {
+        if (tokens[idx + 1] !== undefined) dataParts.push(tokens[idx + 1]);
+        idx += 2;
+      } else if (t === '--url') {
+        url = tokens[idx + 1] || url;
+        idx += 2;
+      } else if (CURL_VALUE_FLAGS.indexOf(t) !== -1) {
+        idx += 2;
+      } else if (t.charAt(0) === '-' && t.length > 1) {
+        idx += 1;
+      } else {
+        if (url === null) url = t;
+        idx += 1;
+      }
+    }
+
+    if (!url) {
+      throw new Error('URLが見つかりませんでした。');
+    }
+
+    return {
+      method: method || (dataParts.length ? 'POST' : 'GET'),
+      url: url,
+      headers: headers,
+      body: dataParts.join('&')
+    };
+  }
+
+  // Mirrors linesToMap in internal/server/server.go: "Key: Value" per line,
+  // blank lines and "#"-comments skipped, first separator wins.
+  function parseHeadersTextarea(text) {
+    var result = [];
+    text.split('\n').forEach(function (line) {
+      var trimmed = line.trim();
+      if (!trimmed || trimmed.charAt(0) === '#') return;
+      var sepIdx = trimmed.indexOf(':');
+      if (sepIdx === -1) return;
+      var name = trimmed.slice(0, sepIdx).trim();
+      var value = trimmed.slice(sepIdx + 1).trim();
+      if (!name) return;
+      result.push({ name: name, value: value });
+    });
+    return result;
+  }
+
+  function buildCurlCommand() {
+    var method = (document.getElementById('method').value || 'GET').trim() || 'GET';
+    var url = document.getElementById('url').value.trim();
+    var headers = parseHeadersTextarea(document.getElementById('headers').value);
+    var body = document.getElementById('body').value;
+
+    var parts = ['curl'];
+    if (method.toUpperCase() !== 'GET') {
+      parts.push('-X', shellQuote(method));
+    }
+    parts.push(shellQuote(url));
+    headers.forEach(function (h) {
+      parts.push('-H', shellQuote(h.name + ': ' + h.value));
+    });
+    if (body) {
+      parts.push('--data', shellQuote(body));
+    }
+    return parts.join(' ');
+  }
+
+  var importInput = document.getElementById('curl-import-input');
+  var importBtn = document.getElementById('curl-import-btn');
+  var importError = document.getElementById('curl-import-error');
+
+  if (importBtn) {
+    importBtn.addEventListener('click', function () {
+      importError.innerHTML = '';
+      try {
+        var parsed = parseCurlCommand(importInput.value);
+        document.getElementById('method').value = parsed.method;
+        document.getElementById('url').value = parsed.url;
+        document.getElementById('headers').value = parsed.headers.join('\n');
+        document.getElementById('body').value = parsed.body;
+      } catch (e) {
+        importError.innerHTML = '<div class="error-box"><span class="icon">error</span>' +
+          (e && e.message ? e.message : 'cURLコマンドを解析できませんでした。') + '</div>';
+      }
+    });
+  }
+
+  var copyBtn = document.getElementById('curl-copy-btn');
+  var copyFallback = document.getElementById('curl-copy-fallback');
+
+  function showCopyFallback(command) {
+    copyFallback.innerHTML = '';
+    var label = document.createElement('p');
+    label.className = 'meta';
+    label.textContent = 'クリップボードにコピーできませんでした。以下のコマンドを手動でコピーしてください。';
+    var box = document.createElement('textarea');
+    box.readOnly = true;
+    box.rows = 3;
+    box.value = command;
+    copyFallback.appendChild(label);
+    copyFallback.appendChild(box);
+    box.focus();
+    box.select();
+  }
+
+  if (copyBtn) {
+    copyBtn.addEventListener('click', function () {
+      var command = buildCurlCommand();
+      var originalLabel = copyBtn.innerHTML;
+      var restore = function () {
+        setTimeout(function () { copyBtn.innerHTML = originalLabel; }, 1500);
+      };
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(command).then(function () {
+          copyFallback.innerHTML = '';
+          copyBtn.innerHTML = '<span class="icon">check</span>コピーしました';
+          restore();
+        }).catch(function () {
+          showCopyFallback(command);
+        });
+      } else {
+        showCopyFallback(command);
+      }
+    });
+  }
 })();
 </script>
 {{end}}
