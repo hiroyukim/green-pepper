@@ -17,6 +17,7 @@ var (
 	dataFile string
 	envFile  string
 	timeout  time.Duration
+	format   string
 )
 
 var runCmd = &cobra.Command{
@@ -30,9 +31,14 @@ func init() {
 	runCmd.Flags().StringVar(&dataFile, "data", "", "CSV file supplying one variable set per row")
 	runCmd.Flags().StringVar(&envFile, "env", "", "YAML file of default template variables (e.g. base_url)")
 	runCmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "per-request timeout")
+	runCmd.Flags().StringVar(&format, "format", "table", "output format: table or json")
 }
 
 func runE(_ *cobra.Command, args []string) error {
+	if format != "table" && format != "json" {
+		return fmt.Errorf("invalid --format %q: must be \"table\" or \"json\"", format)
+	}
+
 	spec, err := model.LoadRequest(args[0])
 	if err != nil {
 		return err
@@ -57,7 +63,13 @@ func runE(_ *cobra.Command, args []string) error {
 	client := &http.Client{Timeout: timeout}
 	results := runner.Run(client, spec, env, rows)
 
-	report.Print(os.Stdout, results, columns)
+	if format == "json" {
+		if err := report.PrintJSON(os.Stdout, results); err != nil {
+			return err
+		}
+	} else {
+		report.Print(os.Stdout, results, columns)
+	}
 
 	for _, r := range results {
 		if !r.Ok() {
