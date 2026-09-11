@@ -1,13 +1,20 @@
-// Package server provides a local web UI for uploading a CSV data file and
-// running it against a fixed request template.
+// Package server provides a local web UI for building an HTTP request,
+// sending it once, or running it against a CSV data file.
 package server
 
 import (
 	"embed"
 	"fmt"
 	"html/template"
+	"maps"
 	"net/http"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"green-pepper/internal/model"
 	"green-pepper/internal/runner"
@@ -16,15 +23,24 @@ import (
 //go:embed templates/*.html
 var templateFS embed.FS
 
-const maxUploadSize = 10 << 20 // 10 MiB
+const (
+	maxUploadSize      = 10 << 20 // 10 MiB
+	maxSendPreviewBody = 1 << 20  // 1 MiB of response body shown in the UI
+)
 
-// Server serves the CSV upload UI for a fixed request template and env.
+var varPattern = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
+
+// Server serves the request-builder UI: an editable request/env form that
+// can send a single request, run it against an uploaded CSV, or download
+// the current request as YAML.
 type Server struct {
-	Spec        *model.RequestSpec
-	Env         map[string]string
 	RequestPath string
 	EnvPath     string
 	Timeout     time.Duration
+
+	mu   sync.Mutex
+	spec model.RequestSpec
+	env  map[string]string
 
 	// Each page gets its own template set (layout.html + that page's
 	// content) so the "content" block each defines doesn't clash with
@@ -33,7 +49,9 @@ type Server struct {
 	resultsTmpl *template.Template
 }
 
-// New builds a Server, parsing the embedded HTML templates.
+// New builds a Server, parsing the embedded HTML templates. spec and env are
+// the initial values loaded from disk; the UI edits an in-memory copy from
+// there on, it never writes back to requestPath/envPath.
 func New(spec *model.RequestSpec, env map[string]string, requestPath, envPath string, timeout time.Duration) (*Server, error) {
 	indexTmpl, err := template.ParseFS(templateFS, "templates/layout.html", "templates/index.html")
 	if err != nil {
@@ -44,11 +62,11 @@ func New(spec *model.RequestSpec, env map[string]string, requestPath, envPath st
 		return nil, fmt.Errorf("parsing templates: %w", err)
 	}
 	return &Server{
-		Spec:        spec,
-		Env:         env,
 		RequestPath: requestPath,
 		EnvPath:     envPath,
 		Timeout:     timeout,
+		spec:        *spec,
+		env:         maps.Clone(env),
 		indexTmpl:   indexTmpl,
 		resultsTmpl: resultsTmpl,
 	}, nil
@@ -58,7 +76,7 @@ func New(spec *model.RequestSpec, env map[string]string, requestPath, envPath st
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleIndex)
-	mux.HandleFunc("POST /run", s.handleRun)
+	mux.HandleFunc("POST /execute", s.handleExecute)
 	return mux
 }
 
@@ -66,33 +84,155 @@ type pageData struct {
 	RequestPath string
 	EnvPath     string
 	Error       string
+
+	Method      string
+	URL         string
+	HeadersText string
+	Body        string
+	EnvText     string
+	UsedVarsCSV string
+
+	SendResult *sendResultView
+}
+
+type sendResultView struct {
+	StatusCode int
+	Status     string
+	OK         bool
+	Duration   string
+	Bytes      int64
+	Headers    []headerView
+	Body       string
+	Err        string
+}
+
+type headerView struct {
+	Name  string
+	Value string
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	s.render(w, s.indexTmpl, pageData{RequestPath: s.RequestPath, EnvPath: s.EnvPath})
+	s.mu.Lock()
+	data := s.pageDataLocked("")
+	s.mu.Unlock()
+	s.render(w, s.indexTmpl, data)
 }
 
-func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
+// pageDataLocked builds pageData from the current in-memory spec/env. Callers
+// must hold s.mu.
+func (s *Server) pageDataLocked(errMsg string) pageData {
+	return pageData{
+		RequestPath: s.RequestPath,
+		EnvPath:     s.EnvPath,
+		Error:       errMsg,
+		Method:      s.spec.Method,
+		URL:         s.spec.URL,
+		HeadersText: mapToLines(s.spec.Headers, ": "),
+		Body:        s.spec.Body,
+		EnvText:     mapToLines(s.env, "="),
+		UsedVarsCSV: strings.Join(usedVars(s.spec), ","),
+	}
+}
+
+// handleExecute applies the edited request/env fields from the form, then
+// dispatches on the pressed button ("send", "run" or "download").
+func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
-		s.render(w, s.indexTmpl, pageData{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Error: "アップロードの読み取りに失敗しました: " + err.Error()})
+		s.mu.Lock()
+		data := s.pageDataLocked("フォームの読み取りに失敗しました: " + err.Error())
+		s.mu.Unlock()
+		s.render(w, s.indexTmpl, data)
 		return
+	}
+
+	method := strings.TrimSpace(r.FormValue("method"))
+	if method == "" {
+		method = "GET"
+	}
+
+	s.mu.Lock()
+	s.spec = model.RequestSpec{
+		Method:  method,
+		URL:     strings.TrimSpace(r.FormValue("url")),
+		Headers: linesToMap(r.FormValue("headers"), ":"),
+		Body:    r.FormValue("body"),
+	}
+	s.env = linesToMap(r.FormValue("env"), "=")
+	spec := s.spec
+	env := maps.Clone(s.env)
+	s.mu.Unlock()
+
+	switch r.FormValue("action") {
+	case "download":
+		s.handleDownload(w, spec)
+	case "run":
+		s.handleRunCSV(w, r, spec, env)
+	default:
+		s.handleSend(w, spec, env)
+	}
+}
+
+func (s *Server) handleSend(w http.ResponseWriter, spec model.RequestSpec, env map[string]string) {
+	s.mu.Lock()
+	data := s.pageDataLocked("")
+	s.mu.Unlock()
+
+	if spec.URL == "" {
+		data.Error = "URLを入力してください"
+		s.render(w, s.indexTmpl, data)
+		return
+	}
+
+	client := &http.Client{Timeout: s.Timeout}
+	result := runner.Send(client, &spec, env, maxSendPreviewBody)
+
+	sr := &sendResultView{
+		StatusCode: result.StatusCode,
+		Status:     result.Status,
+		OK:         result.Ok(),
+		Duration:   result.Duration.Round(time.Millisecond).String(),
+		Bytes:      int64(len(result.Body)),
+		Body:       string(result.Body),
+	}
+	if result.Err != nil {
+		sr.Err = result.Err.Error()
+	}
+	names := make([]string, 0, len(result.Headers))
+	for name := range result.Headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		sr.Headers = append(sr.Headers, headerView{Name: name, Value: strings.Join(result.Headers[name], ", ")})
+	}
+
+	data.SendResult = sr
+	s.render(w, s.indexTmpl, data)
+}
+
+func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model.RequestSpec, env map[string]string) {
+	renderErr := func(msg string) {
+		s.mu.Lock()
+		data := s.pageDataLocked(msg)
+		s.mu.Unlock()
+		s.render(w, s.indexTmpl, data)
 	}
 
 	file, _, err := r.FormFile("csv")
 	if err != nil {
-		s.render(w, s.indexTmpl, pageData{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Error: "CSVファイルを選択してください"})
+		renderErr("CSVファイルを選択してください")
 		return
 	}
 	defer file.Close()
 
 	data, err := model.ParseCSV(file)
 	if err != nil {
-		s.render(w, s.indexTmpl, pageData{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Error: "CSVの解析に失敗しました: " + err.Error()})
+		renderErr("CSVの解析に失敗しました: " + err.Error())
 		return
 	}
 
 	client := &http.Client{Timeout: s.Timeout}
-	results := runner.Run(client, s.Spec, s.Env, data.Rows)
+	results := runner.Run(client, &spec, env, data.Rows)
 
 	view := resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results)}
 	for i, res := range results {
@@ -125,6 +265,17 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	s.render(w, s.resultsTmpl, view)
 }
 
+func (s *Server) handleDownload(w http.ResponseWriter, spec model.RequestSpec) {
+	out, err := yaml.Marshal(spec)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-yaml")
+	w.Header().Set("Content-Disposition", `attachment; filename="request.yaml"`)
+	w.Write(out)
+}
+
 type resultsView struct {
 	RequestPath string
 	EnvPath     string
@@ -149,4 +300,60 @@ func (s *Server) render(w http.ResponseWriter, tmpl *template.Template, data any
 	if err := tmpl.ExecuteTemplate(w, "layout.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// mapToLines renders m as "key<sep>value" lines, sorted by key, for display
+// in a textarea.
+func mapToLines(m map[string]string, sep string) string {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		lines = append(lines, name+sep+m[name])
+	}
+	return strings.Join(lines, "\n")
+}
+
+// linesToMap parses "key<sep>value" lines (blank lines and lines starting
+// with "#" are ignored) back into a map.
+func linesToMap(text, sep string) map[string]string {
+	m := map[string]string{}
+	for line := range strings.SplitSeq(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, value, ok := strings.Cut(line, sep)
+		if !ok {
+			continue
+		}
+		m[strings.TrimSpace(name)] = strings.TrimSpace(value)
+	}
+	return m
+}
+
+// usedVars returns the sorted, de-duplicated list of "{{var}}" names
+// referenced anywhere in spec.
+func usedVars(spec model.RequestSpec) []string {
+	seen := map[string]bool{}
+	var names []string
+	add := func(s string) {
+		for _, m := range varPattern.FindAllStringSubmatch(s, -1) {
+			if !seen[m[1]] {
+				seen[m[1]] = true
+				names = append(names, m[1])
+			}
+		}
+	}
+	add(spec.Method)
+	add(spec.URL)
+	add(spec.Body)
+	for _, v := range spec.Headers {
+		add(v)
+	}
+	sort.Strings(names)
+	return names
 }

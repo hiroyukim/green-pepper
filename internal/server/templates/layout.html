@@ -3,26 +3,50 @@
 <head>
   <meta charset="utf-8">
   <title>gp — CSV Request Runner</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,400,0..1,0">
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
-    h1 { font-size: 1.4rem; }
+    h1 { font-size: 1.4rem; display: flex; align-items: center; gap: 0.4rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.75rem; display: flex; align-items: center; gap: 0.4rem; }
     .card { border: 1px solid #ddd; border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
     .meta { color: #555; font-size: 0.9rem; }
     .meta code { background: #f2f2f2; padding: 0.1rem 0.3rem; border-radius: 4px; }
-    input[type="file"] { display: block; margin: 0.75rem 0; }
-    button { background: #2563eb; color: #fff; border: none; padding: 0.5rem 1.25rem; border-radius: 6px; font-size: 1rem; cursor: pointer; }
+    .field { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.85rem; }
+    .field label { font-size: 0.85rem; font-weight: 600; color: #333; }
+    .row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-start; }
+    .row > .field { flex: 1 1 240px; }
+    .row > .field.method { flex: 0 0 140px; }
+    input[type="text"], select, textarea {
+      font: inherit; font-size: 0.9rem; padding: 0.45rem 0.6rem;
+      border: 1px solid #ccc; border-radius: 6px; width: 100%; box-sizing: border-box;
+    }
+    textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; resize: vertical; }
+    input[type="file"] { display: none; }
+    button { display: inline-flex; align-items: center; gap: 0.35rem; background: #2563eb; color: #fff; border: none; padding: 0.55rem 1.25rem; border-radius: 6px; font-size: 0.95rem; cursor: pointer; }
     button:hover { background: #1d4ed8; }
+    button.secondary { background: #fff; color: #2563eb; border: 1px solid #2563eb; }
+    button.secondary:hover { background: #eff6ff; }
+    .actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.5rem; }
     table { border-collapse: collapse; width: 100%; margin-top: 1rem; font-size: 0.9rem; }
     th, td { border-bottom: 1px solid #eee; padding: 0.4rem 0.6rem; text-align: left; }
     th { background: #fafafa; }
-    .ok { color: #15803d; font-weight: 600; }
-    .fail { color: #b91c1c; font-weight: 600; }
+    .ok { color: #15803d; font-weight: 600; display: inline-flex; align-items: center; gap: 0.25rem; }
+    .fail { color: #b91c1c; font-weight: 600; display: inline-flex; align-items: center; gap: 0.25rem; }
     .summary { margin-top: 0.75rem; font-weight: 600; }
-    .error-box { color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
+    .error-box { color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; }
+    .warn-box { color: #92400e; background: #fffbeb; border: 1px solid #fde68a; padding: 0.6rem 0.9rem; border-radius: 6px; margin: 0.6rem 0; font-size: 0.85rem; display: flex; align-items: center; gap: 0.5rem; }
+    .dropzone { border: 2px dashed #bbb; border-radius: 8px; padding: 1.5rem 1rem; text-align: center; color: #666; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+    .dropzone .icon { font-size: 2rem; color: #999; }
+    .dropzone.dragover { border-color: #2563eb; color: #2563eb; background: #eff6ff; }
+    .dropzone.dragover .icon { color: #2563eb; }
+    .filename { font-size: 0.85rem; color: #333; margin-top: 0.5rem; }
+    .csv-preview { margin-top: 0.75rem; }
+    .response pre { background: #0b1021; color: #e5e7eb; padding: 0.75rem; border-radius: 6px; overflow: auto; max-height: 320px; font-size: 0.85rem; }
+    .icon { font-family: "Material Symbols Outlined"; font-weight: normal; font-style: normal; font-size: 1.15rem; line-height: 1; vertical-align: middle; }
   </style>
 </head>
 <body>
-  <h1>gp — CSV Request Runner</h1>
+  <h1><span class="icon">bolt</span>gp — CSV Request Runner</h1>
   {{template "content" .}}
 </body>
 </html>

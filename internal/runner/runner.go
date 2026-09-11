@@ -49,30 +49,38 @@ func mergeVars(env, row map[string]string) map[string]string {
 	return vars
 }
 
-func runOne(client *http.Client, spec *model.RequestSpec, vars, row map[string]string) Result {
+func buildRequest(spec *model.RequestSpec, vars map[string]string) (*http.Request, error) {
 	method, err := tmpl.Render(spec.Method, vars)
 	if err != nil {
-		return Result{Row: row, Err: err}
+		return nil, err
 	}
 	url, err := tmpl.Render(spec.URL, vars)
 	if err != nil {
-		return Result{Row: row, Err: err}
+		return nil, err
 	}
 	body, err := tmpl.Render(spec.Body, vars)
 	if err != nil {
-		return Result{Row: row, Err: err}
+		return nil, err
 	}
 
 	req, err := http.NewRequest(strings.ToUpper(method), url, strings.NewReader(body))
 	if err != nil {
-		return Result{Row: row, Err: err}
+		return nil, err
 	}
 	for name, value := range spec.Headers {
 		headerValue, err := tmpl.Render(value, vars)
 		if err != nil {
-			return Result{Row: row, Err: err}
+			return nil, err
 		}
 		req.Header.Set(name, headerValue)
+	}
+	return req, nil
+}
+
+func runOne(client *http.Client, spec *model.RequestSpec, vars, row map[string]string) Result {
+	req, err := buildRequest(spec, vars)
+	if err != nil {
+		return Result{Row: row, Err: err}
 	}
 
 	start := time.Now()
@@ -91,5 +99,52 @@ func runOne(client *http.Client, spec *model.RequestSpec, vars, row map[string]s
 		Status:     resp.Status,
 		Duration:   duration,
 		Bytes:      n,
+	}
+}
+
+// SendResult is the outcome of a single ad-hoc request, capturing the full
+// response headers and body (unlike Result, which only records size, for
+// compact display in a batch table).
+type SendResult struct {
+	StatusCode int
+	Status     string
+	Duration   time.Duration
+	Headers    http.Header
+	Body       []byte
+	Err        error
+}
+
+// Ok reports whether the request completed with a successful (2xx) status.
+func (r SendResult) Ok() bool {
+	return r.Err == nil && r.StatusCode >= 200 && r.StatusCode < 300
+}
+
+// Send executes spec once against vars, capturing at most maxBody bytes of
+// the response body for display.
+func Send(client *http.Client, spec *model.RequestSpec, vars map[string]string, maxBody int64) SendResult {
+	req, err := buildRequest(spec, vars)
+	if err != nil {
+		return SendResult{Err: err}
+	}
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	duration := time.Since(start)
+	if err != nil {
+		return SendResult{Duration: duration, Err: err}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	if err != nil {
+		return SendResult{StatusCode: resp.StatusCode, Status: resp.Status, Duration: duration, Headers: resp.Header, Err: err}
+	}
+
+	return SendResult{
+		StatusCode: resp.StatusCode,
+		Status:     resp.Status,
+		Duration:   duration,
+		Headers:    resp.Header,
+		Body:       body,
 	}
 }

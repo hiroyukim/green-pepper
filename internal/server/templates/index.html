@@ -1,14 +1,189 @@
 {{define "content"}}
-{{if .Error}}<div class="error-box">{{.Error}}</div>{{end}}
+{{if .Error}}<div class="error-box"><span class="icon">error</span>{{.Error}}</div>{{end}}
+
+<form action="/execute" method="post" enctype="multipart/form-data" id="request-form" data-used-vars="{{.UsedVarsCSV}}">
+
 <div class="card">
+  <h2><span class="icon">http</span>リクエスト</h2>
   <p class="meta">
-    Request template: <code>{{.RequestPath}}</code>
+    初期読み込み: <code>{{.RequestPath}}</code>
     {{if .EnvPath}}&nbsp;/&nbsp;Env: <code>{{.EnvPath}}</code>{{end}}
   </p>
-  <form action="/run" method="post" enctype="multipart/form-data">
-    <label for="csv">CSVファイルをアップロード（ヘッダー行が変数名）</label>
-    <input type="file" id="csv" name="csv" accept=".csv" required>
-    <button type="submit">実行</button>
-  </form>
+
+  <div class="row">
+    <div class="field method">
+      <label for="method">Method</label>
+      <input type="text" id="method" name="method" list="method-list" value="{{.Method}}">
+      <datalist id="method-list">
+        <option value="GET"></option>
+        <option value="POST"></option>
+        <option value="PUT"></option>
+        <option value="PATCH"></option>
+        <option value="DELETE"></option>
+        <option value="HEAD"></option>
+        <option value="OPTIONS"></option>
+      </datalist>
+    </div>
+    <div class="field">
+      <label for="url">URL</label>
+      <input type="text" id="url" name="url" value="{{.URL}}" required>
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="headers">Headers（1行1ヘッダー: <code>Key: Value</code>）</label>
+    <textarea id="headers" name="headers" rows="4">{{.HeadersText}}</textarea>
+  </div>
+
+  <div class="field">
+    <label for="body">Body</label>
+    <textarea id="body" name="body" rows="6">{{.Body}}</textarea>
+  </div>
 </div>
+
+<div class="card">
+  <h2><span class="icon">tune</span>環境変数</h2>
+  <div class="field">
+    <label for="env">1行1変数: <code>key=value</code></label>
+    <textarea id="env" name="env" rows="4">{{.EnvText}}</textarea>
+  </div>
+</div>
+
+<div class="card">
+  <h2><span class="icon">table_chart</span>CSVで一括実行</h2>
+  <div class="dropzone" id="dropzone" tabindex="0">
+    <div class="icon">upload_file</div>
+    <p>CSVファイルをドラッグ&amp;ドロップ、またはクリックして選択</p>
+    <input type="file" id="csv" name="csv" accept=".csv">
+    <p class="filename" id="filename"></p>
+  </div>
+  <div id="csv-warning"></div>
+  <div class="csv-preview" id="csv-preview"></div>
+</div>
+
+<div class="actions">
+  <button type="submit" name="action" value="send"><span class="icon">send</span>単発送信</button>
+  <button type="submit" name="action" value="run" class="secondary"><span class="icon">play_arrow</span>CSVで実行</button>
+  <button type="submit" name="action" value="download" class="secondary"><span class="icon">download</span>YAMLをダウンロード</button>
+</div>
+
+</form>
+
+{{if .SendResult}}
+<div class="card response">
+  <h2><span class="icon">reply</span>レスポンス</h2>
+  {{if .SendResult.Err}}
+  <div class="error-box"><span class="icon">error</span>{{.SendResult.Err}}</div>
+  {{else}}
+  <p class="meta">
+    <span class="{{if .SendResult.OK}}ok{{else}}fail{{end}}">
+      <span class="icon">{{if .SendResult.OK}}check_circle{{else}}cancel{{end}}</span>{{.SendResult.Status}}
+    </span>
+    &nbsp;/&nbsp;{{.SendResult.Duration}}&nbsp;/&nbsp;{{.SendResult.Bytes}} bytes
+  </p>
+  {{if .SendResult.Headers}}
+  <table>
+    <tbody>
+      {{range .SendResult.Headers}}
+      <tr><td>{{.Name}}</td><td>{{.Value}}</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+  <pre>{{.SendResult.Body}}</pre>
+  {{end}}
+</div>
+{{end}}
+
+<script>
+(function () {
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  var form = document.getElementById('request-form');
+  var usedVars = (form.dataset.usedVars || '').split(',').filter(Boolean);
+  var dropzone = document.getElementById('dropzone');
+  var fileInput = document.getElementById('csv');
+  var filenameEl = document.getElementById('filename');
+  var previewEl = document.getElementById('csv-preview');
+  var warningEl = document.getElementById('csv-warning');
+  var envField = document.getElementById('env');
+
+  function envKeys() {
+    return envField.value.split('\n')
+      .map(function (l) { return l.split('=')[0].trim(); })
+      .filter(Boolean);
+  }
+
+  // Naive preview parser: good enough to show columns/row count/first rows
+  // before submitting. The server (internal/model.ParseCSV) is authoritative.
+  function parseCSVPreview(text) {
+    var lines = text.split(/\r\n|\n/).filter(function (l) { return l.length > 0; });
+    if (lines.length === 0) return null;
+    var splitLine = function (l) {
+      return l.split(',').map(function (c) { return c.trim().replace(/^"|"$/g, ''); });
+    };
+    return { header: splitLine(lines[0]), rows: lines.slice(1, 6).map(splitLine), total: lines.length - 1 };
+  }
+
+  function renderPreview(file) {
+    if (!file) {
+      filenameEl.textContent = '';
+      previewEl.innerHTML = '';
+      warningEl.innerHTML = '';
+      return;
+    }
+    filenameEl.textContent = file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed = parseCSVPreview(String(reader.result));
+      if (!parsed) {
+        previewEl.innerHTML = '';
+        warningEl.innerHTML = '';
+        return;
+      }
+
+      var html = '<table><thead><tr>' +
+        parsed.header.map(function (h) { return '<th>' + escapeHtml(h) + '</th>'; }).join('') +
+        '</tr></thead><tbody>';
+      parsed.rows.forEach(function (row) {
+        html += '<tr>' + row.map(function (c) { return '<td>' + escapeHtml(c) + '</td>'; }).join('') + '</tr>';
+      });
+      html += '</tbody></table><p class="meta">' + parsed.total + '行 / 列: ' + escapeHtml(parsed.header.join(', ')) + '</p>';
+      previewEl.innerHTML = html;
+
+      var covered = new Set(parsed.header.concat(envKeys()));
+      var missing = usedVars.filter(function (v) { return !covered.has(v); });
+      warningEl.innerHTML = missing.length
+        ? '<div class="warn-box"><span class="icon">warning</span>CSV・環境変数のどちらにも無い変数があります: ' + escapeHtml(missing.join(', ')) + '</div>'
+        : '';
+    };
+    reader.readAsText(file);
+  }
+
+  dropzone.addEventListener('click', function () { fileInput.click(); });
+  dropzone.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+  });
+  fileInput.addEventListener('change', function () { renderPreview(fileInput.files[0]); });
+
+  ['dragenter', 'dragover'].forEach(function (evt) {
+    dropzone.addEventListener(evt, function (e) { e.preventDefault(); dropzone.classList.add('dragover'); });
+  });
+  ['dragleave', 'drop'].forEach(function (evt) {
+    dropzone.addEventListener(evt, function (e) { e.preventDefault(); dropzone.classList.remove('dragover'); });
+  });
+  dropzone.addEventListener('drop', function (e) {
+    var file = e.dataTransfer.files[0];
+    if (file) {
+      fileInput.files = e.dataTransfer.files;
+      renderPreview(file);
+    }
+  });
+})();
+</script>
 {{end}}
