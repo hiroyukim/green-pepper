@@ -1,5 +1,6 @@
 {{define "content"}}
 <div class="card">
+  <h2><span class="icon">checklist</span>実行結果</h2>
   <p class="meta">
     Request template: <code>{{.RequestPath}}</code>
     {{if .EnvPath}}&nbsp;/&nbsp;Env: <code>{{.EnvPath}}</code>{{end}}
@@ -19,7 +20,7 @@
       {{range .Rows}}
       <tr>
         <td>{{.Index}}</td>
-        <td class="{{if .OK}}ok{{else}}fail{{end}}">{{.Status}}</td>
+        <td class="{{if .OK}}ok{{else}}fail{{end}}"><span class="icon">{{if .OK}}check_circle{{else}}cancel{{end}}</span>{{.Status}}</td>
         <td>{{.Duration}}</td>
         <td>{{.Bytes}}</td>
         {{range .Values}}<td>{{.}}</td>{{end}}
@@ -30,5 +31,5 @@
   </table>
   <p class="summary">{{.Passed}}/{{.Total}} passed</p>
 </div>
-<p><a href="/">&larr; 別のCSVで実行する</a></p>
+<p><a href="/"><span class="icon">arrow_back</span>編集画面に戻る</a></p>
 {{end}}
