@@ -67,18 +67,21 @@ gp run examples/request.yaml --data examples/users.csv --env examples/env.yaml
 
 ## Web UI
 
-CSVファイルをブラウザからアップロードして実行したい場合は `gp serve` を使う。
-リクエストテンプレートと環境変数はコマンドの起動時に指定し、ブラウザ側ではCSVのアップロードと実行だけを行う。
+ブラウザでリクエストを組み立てて送信・実行したい場合は `gp serve` を使う。
+Method/URL/Headers/Bodyや環境変数はブラウザ上で編集でき、単発送信・CSVでの一括実行・YAMLダウンロードができる。
 
 ```sh
-gp serve <request-file> [--env <env-file>] [--port <port>] [--timeout <duration>]
+gp serve [request-file] [--env <env-file>] [--port <port>] [--timeout <duration>]
 ```
 
+`request-file` は省略可能。指定した場合はその内容を初期値として読み込み、省略した場合は空のリクエスト（`GET` / URL空）から編集を始められる。
+
 ```sh
+gp serve
 gp serve examples/request.yaml --env examples/env.yaml --port 8080
 ```
 
-`http://localhost:8080` を開き、CSVファイルを選んで「実行」を押すと、`gp run` と同じ結果が表で表示される。
+`http://localhost:8080` を開き、リクエストを編集して「単発送信」で送るか、CSVファイルを選んで「CSVで実行」を押すと `gp run` と同じ結果が表で表示される。
 
 ## Releases
 

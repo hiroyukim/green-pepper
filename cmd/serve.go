@@ -18,9 +18,9 @@ var (
 )
 
 var serveCmd = &cobra.Command{
-	Use:   "serve <request-file>",
-	Short: "Serve a local web UI for uploading a CSV data file and running it",
-	Args:  cobra.ExactArgs(1),
+	Use:   "serve [request-file]",
+	Short: "Serve a local web UI for building/sending a request and running it against a CSV data file",
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  serveE,
 }
 
@@ -31,11 +31,19 @@ func init() {
 }
 
 func serveE(_ *cobra.Command, args []string) error {
-	requestPath := args[0]
+	var requestPath string
+	var spec *model.RequestSpec
 
-	spec, err := model.LoadRequest(requestPath)
-	if err != nil {
-		return err
+	if len(args) == 1 {
+		requestPath = args[0]
+
+		var err error
+		spec, err = model.LoadRequest(requestPath)
+		if err != nil {
+			return err
+		}
+	} else {
+		spec = &model.RequestSpec{Method: "GET"}
 	}
 
 	env, err := model.LoadEnv(serveEnvFile)
