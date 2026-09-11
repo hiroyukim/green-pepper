@@ -60,9 +60,39 @@
     <textarea id="headers" name="headers" rows="4">{{.HeadersText}}</textarea>
   </div>
 
-  <div class="field">
+  <div class="field" id="body-type-field">
+    <label for="body-type">Body Type</label>
+    <select id="body-type">
+      <option value="none">none</option>
+      <option value="raw" selected>raw (JSON)</option>
+      <option value="urlencoded">x-www-form-urlencoded</option>
+      <option value="form-data">form-data</option>
+    </select>
+  </div>
+
+  <div class="field" id="body-raw-field">
     <label for="body">Body</label>
+    <div class="actions">
+      <button type="button" class="secondary" id="body-format-btn"><span class="icon">code</span>整形</button>
+    </div>
     <textarea id="body" name="body" rows="6">{{.Body}}</textarea>
+    <div id="body-json-warning"></div>
+  </div>
+
+  <div class="field" id="body-kv-field" hidden>
+    <label>Body（Key/Value）</label>
+    <table id="body-kv-table">
+      <thead>
+        <tr>
+          <th class="body-kv-col-check"></th>
+          <th>Key</th>
+          <th>Value</th>
+          <th class="body-kv-col-del"></th>
+        </tr>
+      </thead>
+      <tbody id="body-kv-table-body"></tbody>
+    </table>
+    <button type="button" class="secondary" id="body-kv-add-btn"><span class="icon">add</span>フィールドを追加</button>
   </div>
 </div>
 
@@ -538,6 +568,198 @@
       }
     });
   }
+})();
+</script>
+
+<script>
+(function () {
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  var FORM_DATA_BOUNDARY = '----gpFormBoundary7MA4YWxkTrZu0gW';
+
+  var bodyTypeSelect = document.getElementById('body-type');
+  var bodyRawField = document.getElementById('body-raw-field');
+  var bodyTextarea = document.getElementById('body');
+  var formatBtn = document.getElementById('body-format-btn');
+  var jsonWarningEl = document.getElementById('body-json-warning');
+  var kvField = document.getElementById('body-kv-field');
+  var kvTableBody = document.getElementById('body-kv-table-body');
+  var kvAddBtn = document.getElementById('body-kv-add-btn');
+  var headersField = document.getElementById('headers');
+
+  // Key/value rows shared between x-www-form-urlencoded and form-data, kept
+  // as an array of { enabled, key, value }. Rebuilt into #body whenever the
+  // table changes or the selected body type changes between the two.
+  var kvRows = [];
+
+  // Tracks the exact Content-Type value we last auto-set into #headers, so
+  // switching away from urlencoded/form-data can remove it again without
+  // clobbering a value the user hand-edited in the meantime.
+  var lastAutoContentType = null;
+
+  function findContentTypeIndex(lines) {
+    for (var i = 0; i < lines.length; i++) {
+      var idx = lines[i].indexOf(':');
+      if (idx === -1) continue;
+      if (lines[i].slice(0, idx).trim().toLowerCase() === 'content-type') return i;
+    }
+    return -1;
+  }
+
+  function setAutoContentType(value) {
+    var lines = headersField.value.split('\n');
+    if (lines.length === 1 && lines[0] === '') lines = [];
+    var idx = findContentTypeIndex(lines);
+    if (idx !== -1) lines.splice(idx, 1);
+    lines.push('Content-Type: ' + value);
+    headersField.value = lines.join('\n');
+    lastAutoContentType = value;
+  }
+
+  function removeAutoContentTypeIfUnchanged() {
+    if (lastAutoContentType === null) return;
+    var lines = headersField.value.split('\n');
+    var idx = findContentTypeIndex(lines);
+    if (idx === -1) {
+      lastAutoContentType = null;
+      return;
+    }
+    var value = lines[idx].slice(lines[idx].indexOf(':') + 1).trim();
+    if (value === lastAutoContentType) {
+      lines.splice(idx, 1);
+      headersField.value = lines.join('\n');
+    }
+    lastAutoContentType = null;
+  }
+
+  function buildUrlEncodedBody(rows) {
+    return rows.filter(function (r) { return r.enabled && r.key !== ''; })
+      .map(function (r) { return encodeURIComponent(r.key) + '=' + encodeURIComponent(r.value); })
+      .join('&');
+  }
+
+  function buildFormDataBody(rows) {
+    var out = '';
+    rows.filter(function (r) { return r.enabled && r.key !== ''; }).forEach(function (r) {
+      out += '--' + FORM_DATA_BOUNDARY + '\r\n';
+      out += 'Content-Disposition: form-data; name="' + r.key.replace(/"/g, '\\"') + '"\r\n\r\n';
+      out += r.value + '\r\n';
+    });
+    out += '--' + FORM_DATA_BOUNDARY + '--\r\n';
+    return out;
+  }
+
+  // Re-applies the Content-Type header on every call (type switch AND table
+  // edit), relying on setAutoContentType's strip-before-insert behavior to
+  // avoid ever accumulating duplicate Content-Type lines.
+  function syncKvToBody() {
+    var type = bodyTypeSelect.value;
+    if (type === 'urlencoded') {
+      setAutoContentType('application/x-www-form-urlencoded');
+      bodyTextarea.value = buildUrlEncodedBody(kvRows);
+    } else if (type === 'form-data') {
+      setAutoContentType('multipart/form-data; boundary=' + FORM_DATA_BOUNDARY);
+      bodyTextarea.value = buildFormDataBody(kvRows);
+    }
+  }
+
+  function renderKvTable() {
+    var html = '';
+    kvRows.forEach(function (row, i) {
+      html += '<tr data-index="' + i + '">' +
+        '<td class="body-kv-col-check"><input type="checkbox" class="body-kv-enabled"' + (row.enabled ? ' checked' : '') + '></td>' +
+        '<td><input type="text" class="body-kv-key" value="' + escapeHtml(row.key) + '"></td>' +
+        '<td><input type="text" class="body-kv-value" value="' + escapeHtml(row.value) + '"></td>' +
+        '<td class="body-kv-col-del"><button type="button" class="icon-btn body-kv-del" aria-label="削除"><span class="icon">delete</span></button></td>' +
+        '</tr>';
+    });
+    kvTableBody.innerHTML = html;
+  }
+
+  function applyBodyType() {
+    var type = bodyTypeSelect.value;
+    jsonWarningEl.innerHTML = '';
+    if (type === 'none') {
+      removeAutoContentTypeIfUnchanged();
+      bodyRawField.hidden = true;
+      kvField.hidden = true;
+      bodyTextarea.value = '';
+      bodyTextarea.readOnly = true;
+    } else if (type === 'raw') {
+      removeAutoContentTypeIfUnchanged();
+      bodyRawField.hidden = false;
+      kvField.hidden = true;
+      bodyTextarea.readOnly = false;
+    } else if (type === 'urlencoded') {
+      bodyTextarea.readOnly = false;
+      bodyRawField.hidden = true;
+      kvField.hidden = false;
+      syncKvToBody();
+    } else if (type === 'form-data') {
+      bodyTextarea.readOnly = false;
+      bodyRawField.hidden = true;
+      kvField.hidden = false;
+      syncKvToBody();
+    }
+  }
+
+  if (formatBtn) {
+    formatBtn.addEventListener('click', function () {
+      jsonWarningEl.innerHTML = '';
+      try {
+        var obj = JSON.parse(bodyTextarea.value);
+        bodyTextarea.value = JSON.stringify(obj, null, 2);
+      } catch (e) {
+        jsonWarningEl.innerHTML = '<div class="warn-box"><span class="icon">warning</span>不正なJSONです: ' +
+          escapeHtml(e && e.message ? e.message : String(e)) + '</div>';
+      }
+    });
+  }
+
+  kvTableBody.addEventListener('input', function (e) {
+    var tr = e.target.closest('tr');
+    if (!tr) return;
+    var i = Number(tr.dataset.index);
+    if (Number.isNaN(i) || !kvRows[i]) return;
+    if (e.target.classList.contains('body-kv-key')) kvRows[i].key = e.target.value;
+    if (e.target.classList.contains('body-kv-value')) kvRows[i].value = e.target.value;
+    syncKvToBody();
+  });
+
+  kvTableBody.addEventListener('change', function (e) {
+    var tr = e.target.closest('tr');
+    if (!tr) return;
+    var i = Number(tr.dataset.index);
+    if (Number.isNaN(i) || !kvRows[i]) return;
+    if (e.target.classList.contains('body-kv-enabled')) {
+      kvRows[i].enabled = e.target.checked;
+      syncKvToBody();
+    }
+  });
+
+  kvTableBody.addEventListener('click', function (e) {
+    var delBtn = e.target.closest('.body-kv-del');
+    if (!delBtn) return;
+    var tr = delBtn.closest('tr');
+    var i = Number(tr.dataset.index);
+    if (Number.isNaN(i) || !kvRows[i]) return;
+    kvRows.splice(i, 1);
+    renderKvTable();
+    syncKvToBody();
+  });
+
+  kvAddBtn.addEventListener('click', function () {
+    kvRows.push({ enabled: true, key: '', value: '' });
+    renderKvTable();
+  });
+
+  bodyTypeSelect.addEventListener('change', applyBodyType);
+
+  applyBodyType();
 })();
 </script>
 {{end}}
