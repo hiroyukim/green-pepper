@@ -31,6 +31,22 @@
   </div>
 
   <div class="field">
+    <label>Query Params</label>
+    <table id="params-table">
+      <thead>
+        <tr>
+          <th class="params-col-check"></th>
+          <th>Key</th>
+          <th>Value</th>
+          <th class="params-col-del"></th>
+        </tr>
+      </thead>
+      <tbody id="params-table-body"></tbody>
+    </table>
+    <button type="button" class="secondary" id="params-add-btn"><span class="icon">add</span>パラメータを追加</button>
+  </div>
+
+  <div class="field">
     <label for="headers">Headers（1行1ヘッダー: <code>Key: Value</code>）</label>
     <textarea id="headers" name="headers" rows="4">{{.HeadersText}}</textarea>
   </div>
@@ -184,6 +200,118 @@
       renderPreview(file);
     }
   });
+})();
+
+(function () {
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  var urlField = document.getElementById('url');
+  var tableBody = document.getElementById('params-table-body');
+  var addBtn = document.getElementById('params-add-btn');
+
+  // Params are tracked as an array of { enabled, key, value } rows, kept in
+  // sync with the URL field's query string (the part after the first "?").
+  // The URL may contain double-curly-brace template placeholders (e.g. a
+  // "base_url" var) and a templated origin, so we deliberately avoid the
+  // URL/URLSearchParams APIs and split the raw text manually.
+  var params = [];
+  var syncing = false; // guards against update loops between table <-> field
+
+  function splitUrl(raw) {
+    var idx = raw.indexOf('?');
+    if (idx === -1) return { base: raw, query: '' };
+    return { base: raw.slice(0, idx), query: raw.slice(idx + 1) };
+  }
+
+  function parseQuery(query) {
+    if (!query) return [];
+    return query.split('&').filter(function (part) { return part.length > 0; }).map(function (part) {
+      var eq = part.indexOf('=');
+      if (eq === -1) return { enabled: true, key: part, value: '' };
+      return { enabled: true, key: part.slice(0, eq), value: part.slice(eq + 1) };
+    });
+  }
+
+  function buildQuery(rows) {
+    return rows.filter(function (row) { return row.enabled && row.key !== ''; }).map(function (row) {
+      return row.key + '=' + row.value;
+    }).join('&');
+  }
+
+  function parseUrlIntoParams() {
+    var parts = splitUrl(urlField.value);
+    params = parseQuery(parts.query);
+    renderTable();
+  }
+
+  function applyParamsToUrl() {
+    var parts = splitUrl(urlField.value);
+    var query = buildQuery(params);
+    syncing = true;
+    urlField.value = query ? parts.base + '?' + query : parts.base;
+    syncing = false;
+  }
+
+  function renderTable() {
+    var html = '';
+    params.forEach(function (row, i) {
+      html += '<tr data-index="' + i + '">' +
+        '<td class="params-col-check"><input type="checkbox" class="params-enabled"' + (row.enabled ? ' checked' : '') + '></td>' +
+        '<td><input type="text" class="params-key" value="' + escapeHtml(row.key) + '"></td>' +
+        '<td><input type="text" class="params-value" value="' + escapeHtml(row.value) + '"></td>' +
+        '<td class="params-col-del"><button type="button" class="icon-btn params-del" aria-label="削除"><span class="icon">delete</span></button></td>' +
+        '</tr>';
+    });
+    tableBody.innerHTML = html;
+  }
+
+  tableBody.addEventListener('input', function (e) {
+    var tr = e.target.closest('tr');
+    if (!tr) return;
+    var i = Number(tr.dataset.index);
+    if (Number.isNaN(i) || !params[i]) return;
+    if (e.target.classList.contains('params-key')) params[i].key = e.target.value;
+    if (e.target.classList.contains('params-value')) params[i].value = e.target.value;
+    applyParamsToUrl();
+  });
+
+  tableBody.addEventListener('change', function (e) {
+    var tr = e.target.closest('tr');
+    if (!tr) return;
+    var i = Number(tr.dataset.index);
+    if (Number.isNaN(i) || !params[i]) return;
+    if (e.target.classList.contains('params-enabled')) {
+      params[i].enabled = e.target.checked;
+      applyParamsToUrl();
+    }
+  });
+
+  tableBody.addEventListener('click', function (e) {
+    var delBtn = e.target.closest('.params-del');
+    if (!delBtn) return;
+    var tr = delBtn.closest('tr');
+    var i = Number(tr.dataset.index);
+    if (Number.isNaN(i) || !params[i]) return;
+    params.splice(i, 1);
+    renderTable();
+    applyParamsToUrl();
+  });
+
+  addBtn.addEventListener('click', function () {
+    params.push({ enabled: true, key: '', value: '' });
+    renderTable();
+  });
+
+  urlField.addEventListener('input', function () {
+    if (syncing) return;
+    parseUrlIntoParams();
+  });
+
+  parseUrlIntoParams();
 })();
 </script>
 {{end}}
