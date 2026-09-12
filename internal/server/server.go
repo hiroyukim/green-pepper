@@ -51,6 +51,16 @@ type Server struct {
 	spec model.RequestSpec
 	env  map[string]string
 
+	// Named environments loaded from a directory passed to --env (issue
+	// #10). envDir/envFiles are empty when --env was a single file (or
+	// absent), in which case the environment dropdown/save button are not
+	// shown at all.
+	envDir        string                       // directory environments were loaded from
+	envFiles      map[string]string            // name -> on-disk file name (with extension)
+	envs          map[string]map[string]string // name -> vars, kept in sync with saves
+	envNames      []string                     // sorted, for stable dropdown order
+	activeEnvName string
+
 	// history holds past single-send actions, newest last, capped at
 	// maxHistoryEntries. nextHistoryID increments forever (never reused) so
 	// that a /history/{id} link to an entry evicted by the cap fails
@@ -68,8 +78,10 @@ type Server struct {
 
 // New builds a Server, parsing the embedded HTML templates. spec and env are
 // the initial values loaded from disk; the UI edits an in-memory copy from
-// there on, it never writes back to requestPath/envPath.
-func New(spec *model.RequestSpec, env map[string]string, requestPath, envPath string, timeout time.Duration) (*Server, error) {
+// there on, it never writes back to requestPath/envPath. envDir carries the
+// full set of named environments when --env resolved to a directory (nil
+// when it was a single file or absent).
+func New(spec *model.RequestSpec, env map[string]string, requestPath, envPath string, envDir *model.EnvDir, timeout time.Duration) (*Server, error) {
 	indexTmpl, err := template.ParseFS(templateFS, "templates/layout.html", "templates/index.html")
 	if err != nil {
 		return nil, fmt.Errorf("parsing templates: %w", err)
@@ -78,7 +90,7 @@ func New(spec *model.RequestSpec, env map[string]string, requestPath, envPath st
 	if err != nil {
 		return nil, fmt.Errorf("parsing templates: %w", err)
 	}
-	return &Server{
+	s := &Server{
 		RequestPath: requestPath,
 		EnvPath:     envPath,
 		Timeout:     timeout,
@@ -86,7 +98,20 @@ func New(spec *model.RequestSpec, env map[string]string, requestPath, envPath st
 		env:         maps.Clone(env),
 		indexTmpl:   indexTmpl,
 		resultsTmpl: resultsTmpl,
-	}, nil
+	}
+	if envDir != nil {
+		s.envDir = envDir.Dir
+		s.envFiles = maps.Clone(envDir.Files)
+		s.envs = make(map[string]map[string]string, len(envDir.Envs))
+		for name, vars := range envDir.Envs {
+			s.envs[name] = maps.Clone(vars)
+		}
+		s.envNames = append([]string(nil), envDir.Names...)
+		if len(s.envNames) > 0 {
+			s.activeEnvName = s.envNames[0]
+		}
+	}
+	return s, nil
 }
 
 // Handler returns the http.Handler serving the UI.
@@ -94,6 +119,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("POST /execute", s.handleExecute)
+	mux.HandleFunc("GET /environment", s.handleSwitchEnv)
 	mux.HandleFunc("GET /history/{id}", s.handleHistoryRestore)
 	mux.HandleFunc("GET /collection/{name}", s.handleLoadFromCollection)
 	return mux
@@ -103,6 +129,7 @@ type pageData struct {
 	RequestPath string
 	EnvPath     string
 	Error       string
+	Info        string
 	Saved       string
 
 	Method      string
@@ -111,6 +138,12 @@ type pageData struct {
 	Body        string
 	EnvText     string
 	UsedVarsCSV string
+
+	// EnvNames lists the available named environments (--env was a
+	// directory); empty when --env was a single file or absent, in which
+	// case the template hides the environment dropdown/save button.
+	EnvNames      []string
+	ActiveEnvName string
 
 	CollectionActive bool
 	CollectionNames  []string
@@ -172,16 +205,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // must hold s.mu.
 func (s *Server) pageDataLocked(errMsg string) pageData {
 	data := pageData{
-		RequestPath: s.RequestPath,
-		EnvPath:     s.EnvPath,
-		Error:       errMsg,
-		Method:      s.spec.Method,
-		URL:         s.spec.URL,
-		HeadersText: mapToLines(s.spec.Headers, ": "),
-		Body:        s.spec.Body,
-		EnvText:     mapToLines(s.env, "="),
-		UsedVarsCSV: strings.Join(usedVars(s.spec), ","),
-		History:     s.historyViewsLocked(),
+		RequestPath:   s.RequestPath,
+		EnvPath:       s.EnvPath,
+		Error:         errMsg,
+		Method:        s.spec.Method,
+		URL:           s.spec.URL,
+		HeadersText:   mapToLines(s.spec.Headers, ": "),
+		Body:          s.spec.Body,
+		EnvText:       mapToLines(s.env, "="),
+		UsedVarsCSV:   strings.Join(usedVars(s.spec), ","),
+		EnvNames:      append([]string(nil), s.envNames...),
+		ActiveEnvName: s.activeEnvName,
+		History:       s.historyViewsLocked(),
 	}
 
 	if s.CollectionDir != "" {
@@ -255,11 +290,68 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		s.handleDownload(w, spec)
 	case "run":
 		s.handleRunCSV(w, r, spec, env)
+	case "save-env":
+		s.handleSaveEnv(w, env)
 	case "save_as":
 		s.handleSaveAs(w, r, spec)
 	default:
 		s.handleSend(w, spec, env)
 	}
+}
+
+// handleSwitchEnv handles GET /environment?name=<name>: it loads the named
+// environment's variables into the current in-memory env (replacing
+// whatever is in the #env textarea, exactly like picking a different saved
+// request would replace the request spec) and redirects back to "/".
+func (s *Server) handleSwitchEnv(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+
+	s.mu.Lock()
+	vars, ok := s.envs[name]
+	if ok {
+		s.activeEnvName = name
+		s.env = maps.Clone(vars)
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		http.Error(w, fmt.Sprintf("unknown environment %q", name), http.StatusNotFound)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleSaveEnv writes the current #env textarea contents back to the
+// currently active named environment's file on disk. Only meaningful when
+// --env resolved to a directory (s.activeEnvName is set); otherwise it's an
+// error, though the UI only shows the "この環境を保存" button in that case.
+func (s *Server) handleSaveEnv(w http.ResponseWriter, env map[string]string) {
+	s.mu.Lock()
+	name := s.activeEnvName
+	filename, ok := s.envFiles[name]
+	dir := s.envDir
+	s.mu.Unlock()
+
+	var errMsg, info string
+	switch {
+	case !ok || name == "":
+		errMsg = "保存対象の環境が選択されていません"
+	default:
+		if err := model.SaveEnv(dir, filename, env); err != nil {
+			errMsg = "環境の保存に失敗しました: " + err.Error()
+		} else {
+			s.mu.Lock()
+			s.envs[name] = maps.Clone(env)
+			s.mu.Unlock()
+			info = fmt.Sprintf("環境 %q を保存しました", name)
+		}
+	}
+
+	s.mu.Lock()
+	data := s.pageDataLocked(errMsg)
+	s.mu.Unlock()
+	data.Info = info
+	s.render(w, s.indexTmpl, data)
 }
 
 // handleLoadFromCollection loads the named request from the collection

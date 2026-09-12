@@ -15,7 +15,7 @@ go build -o gp .
 ## Web UI (`gp serve`)
 
 ```sh
-gp serve [request-file|collection-dir] [--env <env-file>] [--port <port>] [--timeout <duration>]
+gp serve [request-file|collection-dir] [--env <env-file|env-dir>] [--port <port>] [--timeout <duration>]
 ```
 
 `request-file`は省略可能。指定した場合はその内容を初期値として読み込み、省略した場合は空のリクエスト
@@ -36,6 +36,7 @@ gp serve examples/request.yaml --env examples/env.yaml --port 8080
 - **単発送信** — 「単発送信」ボタンでリクエストを1回実行し、ステータス・ヘッダー・ボディをその場で確認できる。JSONレスポンスはPretty/Raw切り替えとシンタックスハイライト付きで表示され、コピー・ダウンロードもできる
 - **CSVで一括実行** — CSVファイルをドラッグ&ドロップ(またはクリック)でアップロードすると、実行前に列名・行数・先頭数行をプレビューし、テンプレート変数がCSV・環境変数のどちらにもカバーされていない場合は警告する。「CSVで実行」を押すと`gp run`と同じ結果が表で表示される
 - **環境変数編集・YAMLダウンロード** — 環境変数もブラウザ上で編集でき、編集中のリクエストはYAMLとしてダウンロードして`gp run`にそのまま使い回せる
+- **複数環境の切り替え** — `--env`にディレクトリを渡すと、直下の`*.yaml`/`*.yml`ファイル(拡張子を除いたファイル名が環境名になる)がそれぞれ1つの環境として読み込まれ、「環境変数」カードにドロップダウンが表示される。切り替えると`#env`の内容がその環境の変数に置き換わり、「この環境を保存」で編集内容を元のファイルに書き戻せる。単一ファイル(または未指定)の場合、この操作は表示されず従来どおり
 
 ### コレクション
 
@@ -55,12 +56,13 @@ gp serve ./my-collection/
 CSVの各行で変数展開しながらリクエストテンプレートを繰り返し実行し、結果を表で表示する。CIでの疎通確認などに向く。
 
 ```sh
-gp run <request-file> [--data <csv-file>] [--env <env-file>] [--timeout <duration>] [--format table|json]
+gp run <request-file> [--data <csv-file>] [--env <env-file|env-dir>] [--env-name <name>] [--timeout <duration>] [--format table|json]
 ```
 
 - `<request-file>`: リクエストテンプレート (YAML)。`method` / `url` / `headers` / `body` に `{{var}}` を書ける。
 - `--data`: CSVファイル。1行目がヘッダー（変数名）、以降の各行が1リクエスト分の変数値。省略時は1回だけ実行する。
-- `--env`: デフォルト変数を定義するYAML (`base_url` など)。CSVの値がある場合はそちらが優先される。
+- `--env`: デフォルト変数を定義するYAML (`base_url` など)。CSVの値がある場合はそちらが優先される。ディレクトリを渡すと、直下の`*.yaml`/`*.yml`ファイルをそれぞれ1つの環境として扱う（Dev/Staging/Prodなど）。
+- `--env-name`: `--env`がディレクトリのとき、使用する環境名を指定する。ファイルが1つしかない場合は省略可能（自動選択）。複数ある場合は必須で、未指定または存在しない名前を指定するとエラーになり、利用可能な環境名の一覧が表示される。単一ファイル指定時は無効。
 - `--timeout`: リクエストごとのタイムアウト（デフォルト30秒）。
 - `--format`: 出力形式。`table`（デフォルト、人間向けの表）か `json`（各リクエストの結果を構造化JSONの配列で出力。AIエージェントなどからの利用向け）。
 

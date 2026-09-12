@@ -1,5 +1,6 @@
 {{define "content"}}
 {{if .Error}}<div class="error-box"><span class="icon">error</span>{{.Error}}</div>{{end}}
+{{if .Info}}<div class="info-box"><span class="icon">check_circle</span>{{.Info}}</div>{{end}}
 {{if .Saved}}<div class="notice-box"><span class="icon">check_circle</span>{{.Saved}}</div>{{end}}
 
 {{if .CollectionActive}}
@@ -158,10 +159,25 @@
 
 <div class="card">
   <h2><span class="icon">tune</span>環境変数</h2>
+  {{if .EnvNames}}
+  <div class="field">
+    <label for="env-select">環境を切り替え</label>
+    <select id="env-select" onchange="location.href='/environment?name=' + encodeURIComponent(this.value)">
+      {{range .EnvNames}}
+      <option value="{{.}}"{{if eq . $.ActiveEnvName}} selected{{end}}>{{.}}</option>
+      {{end}}
+    </select>
+  </div>
+  {{end}}
   <div class="field">
     <label for="env">1行1変数: <code>key=value</code></label>
     <textarea id="env" name="env" rows="4">{{.EnvText}}</textarea>
   </div>
+  {{if .EnvNames}}
+  <div class="actions">
+    <button type="submit" name="action" value="save-env" class="secondary"><span class="icon">save</span>この環境を保存</button>
+  </div>
+  {{end}}
 </div>
 
 <div class="card">

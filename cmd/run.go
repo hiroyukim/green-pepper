@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -16,6 +17,7 @@ import (
 var (
 	dataFile string
 	envFile  string
+	envName  string
 	timeout  time.Duration
 	format   string
 )
@@ -29,7 +31,8 @@ var runCmd = &cobra.Command{
 
 func init() {
 	runCmd.Flags().StringVar(&dataFile, "data", "", "CSV file supplying one variable set per row")
-	runCmd.Flags().StringVar(&envFile, "env", "", "YAML file of default template variables (e.g. base_url)")
+	runCmd.Flags().StringVar(&envFile, "env", "", "YAML file of default template variables (e.g. base_url), or a directory of named environment YAML files")
+	runCmd.Flags().StringVar(&envName, "env-name", "", "when --env is a directory, the named environment to use (required if the directory has more than one)")
 	runCmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "per-request timeout")
 	runCmd.Flags().StringVar(&format, "format", "table", "output format: table or json")
 }
@@ -44,7 +47,7 @@ func runE(_ *cobra.Command, args []string) error {
 		return err
 	}
 
-	env, err := model.LoadEnv(envFile)
+	env, err := resolveRunEnv(envFile, envName)
 	if err != nil {
 		return err
 	}
@@ -77,4 +80,45 @@ func runE(_ *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+// resolveRunEnv resolves the --env flag (a single YAML file, a directory of
+// named environment YAML files, or empty) plus --env-name into the single
+// variable map a non-interactive run needs.
+func resolveRunEnv(path, name string) (map[string]string, error) {
+	if path == "" {
+		if name != "" {
+			return nil, fmt.Errorf("--env-name requires --env to be set")
+		}
+		return map[string]string{}, nil
+	}
+
+	isDir, err := model.IsEnvDir(path)
+	if err != nil {
+		return nil, err
+	}
+	if !isDir {
+		if name != "" {
+			return nil, fmt.Errorf("--env-name is only valid when --env is a directory (got file %q)", path)
+		}
+		return model.LoadEnv(path)
+	}
+
+	dir, err := model.LoadEnvDir(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if name == "" {
+		if len(dir.Names) == 1 {
+			return dir.Envs[dir.Names[0]], nil
+		}
+		return nil, fmt.Errorf("multiple environments found in %s, specify one with --env-name: %s", path, strings.Join(dir.Names, ", "))
+	}
+
+	vars, ok := dir.Envs[name]
+	if !ok {
+		return nil, fmt.Errorf("environment %q not found in %s, available: %s", name, path, strings.Join(dir.Names, ", "))
+	}
+	return vars, nil
 }
