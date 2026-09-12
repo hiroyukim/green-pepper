@@ -8,8 +8,10 @@ import (
 	"html/template"
 	"maps"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +28,7 @@ var templateFS embed.FS
 const (
 	maxUploadSize      = 10 << 20 // 10 MiB
 	maxSendPreviewBody = 1 << 20  // 1 MiB of response body shown in the UI
+	maxHistoryEntries  = 50       // oldest single-send history entries are dropped past this
 )
 
 var varPattern = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
@@ -37,6 +40,12 @@ type Server struct {
 	RequestPath string
 	EnvPath     string
 	Timeout     time.Duration
+
+	// CollectionDir, when non-empty, is a directory of "*.yaml"/"*.yml"
+	// request files (see internal/model/collection.go) that the UI can list,
+	// load from, and save into. Empty disables the collection feature
+	// entirely (no sidebar, no save-as, matching single-file/no-arg usage).
+	CollectionDir string
 
 	mu   sync.Mutex
 	spec model.RequestSpec
@@ -51,6 +60,14 @@ type Server struct {
 	envs          map[string]map[string]string // name -> vars, kept in sync with saves
 	envNames      []string                     // sorted, for stable dropdown order
 	activeEnvName string
+
+	// history holds past single-send actions, newest last, capped at
+	// maxHistoryEntries. nextHistoryID increments forever (never reused) so
+	// that a /history/{id} link to an entry evicted by the cap fails
+	// clearly instead of silently resolving to a different entry that
+	// happens to reuse its old slot.
+	history       []historyEntry
+	nextHistoryID int
 
 	// Each page gets its own template set (layout.html + that page's
 	// content) so the "content" block each defines doesn't clash with
@@ -103,6 +120,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("POST /execute", s.handleExecute)
 	mux.HandleFunc("GET /environment", s.handleSwitchEnv)
+	mux.HandleFunc("GET /history/{id}", s.handleHistoryRestore)
+	mux.HandleFunc("GET /collection/{name}", s.handleLoadFromCollection)
 	return mux
 }
 
@@ -111,6 +130,7 @@ type pageData struct {
 	EnvPath     string
 	Error       string
 	Info        string
+	Saved       string
 
 	Method      string
 	URL         string
@@ -125,7 +145,37 @@ type pageData struct {
 	EnvNames      []string
 	ActiveEnvName string
 
+	CollectionActive bool
+	CollectionNames  []string
+
 	SendResult *sendResultView
+	History    []historyRowView
+}
+
+// historyEntry is one past single-send action: what was sent (enough to
+// restore the editing state) and what came back.
+type historyEntry struct {
+	ID       int
+	Spec     model.RequestSpec
+	Env      map[string]string
+	OK       bool
+	Status   string
+	Duration string
+	Bytes    int64
+	Err      string
+}
+
+// historyRowView is the display-ready form of a historyEntry for the
+// "履歴" card.
+type historyRowView struct {
+	ID       int
+	Method   string
+	URL      string
+	OK       bool
+	Status   string
+	Duration string
+	Bytes    int64
+	Err      string
 }
 
 type sendResultView struct {
@@ -146,7 +196,7 @@ type headerView struct {
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	data := s.pageDataLocked("")
+	data := s.pageDataLocked(r.URL.Query().Get("error"))
 	s.mu.Unlock()
 	s.render(w, s.indexTmpl, data)
 }
@@ -154,7 +204,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // pageDataLocked builds pageData from the current in-memory spec/env. Callers
 // must hold s.mu.
 func (s *Server) pageDataLocked(errMsg string) pageData {
-	return pageData{
+	data := pageData{
 		RequestPath:   s.RequestPath,
 		EnvPath:       s.EnvPath,
 		Error:         errMsg,
@@ -166,7 +216,45 @@ func (s *Server) pageDataLocked(errMsg string) pageData {
 		UsedVarsCSV:   strings.Join(usedVars(s.spec), ","),
 		EnvNames:      append([]string(nil), s.envNames...),
 		ActiveEnvName: s.activeEnvName,
+		History:       s.historyViewsLocked(),
 	}
+
+	if s.CollectionDir != "" {
+		data.CollectionActive = true
+		names, err := model.ListCollection(s.CollectionDir)
+		if err != nil {
+			if data.Error == "" {
+				data.Error = "コレクションの読み込みに失敗しました: " + err.Error()
+			}
+		} else {
+			data.CollectionNames = names
+		}
+	}
+
+	return data
+}
+
+// historyViewsLocked returns the current history, newest first. Callers must
+// hold s.mu.
+func (s *Server) historyViewsLocked() []historyRowView {
+	if len(s.history) == 0 {
+		return nil
+	}
+	views := make([]historyRowView, 0, len(s.history))
+	for i := len(s.history) - 1; i >= 0; i-- {
+		h := s.history[i]
+		views = append(views, historyRowView{
+			ID:       h.ID,
+			Method:   h.Spec.Method,
+			URL:      h.Spec.URL,
+			OK:       h.OK,
+			Status:   h.Status,
+			Duration: h.Duration,
+			Bytes:    h.Bytes,
+			Err:      h.Err,
+		})
+	}
+	return views
 }
 
 // handleExecute applies the edited request/env fields from the form, then
@@ -204,6 +292,8 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		s.handleRunCSV(w, r, spec, env)
 	case "save-env":
 		s.handleSaveEnv(w, env)
+	case "save_as":
+		s.handleSaveAs(w, r, spec)
 	default:
 		s.handleSend(w, spec, env)
 	}
@@ -264,6 +354,59 @@ func (s *Server) handleSaveEnv(w http.ResponseWriter, env map[string]string) {
 	s.render(w, s.indexTmpl, data)
 }
 
+// handleLoadFromCollection loads the named request from the collection
+// directory into the current in-memory spec (env is left untouched — that is
+// issue #10's concern) and redirects back to the index page. A no-op 404 when
+// the collection feature is disabled or the request can't be found/loaded.
+func (s *Server) handleLoadFromCollection(w http.ResponseWriter, r *http.Request) {
+	if s.CollectionDir == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	name := r.PathValue("name")
+	spec, err := model.LoadFromCollection(s.CollectionDir, name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	s.mu.Lock()
+	s.spec = *spec
+	s.mu.Unlock()
+
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleSaveAs saves the current (just-updated-from-the-form) spec into the
+// collection directory under the "name" form field, then re-renders the
+// index page with a success or error message.
+func (s *Server) handleSaveAs(w http.ResponseWriter, r *http.Request, spec model.RequestSpec) {
+	name := strings.TrimSpace(r.FormValue("name"))
+
+	if s.CollectionDir == "" {
+		s.mu.Lock()
+		data := s.pageDataLocked("コレクションが指定されていません。`gp serve <collection-dir>` でディレクトリを指定して起動してください")
+		s.mu.Unlock()
+		s.render(w, s.indexTmpl, data)
+		return
+	}
+
+	if err := model.SaveToCollection(s.CollectionDir, name, spec); err != nil {
+		s.mu.Lock()
+		data := s.pageDataLocked("保存に失敗しました: " + err.Error())
+		s.mu.Unlock()
+		s.render(w, s.indexTmpl, data)
+		return
+	}
+
+	s.mu.Lock()
+	data := s.pageDataLocked("")
+	s.mu.Unlock()
+	data.Saved = fmt.Sprintf("%q として保存しました", name)
+	s.render(w, s.indexTmpl, data)
+}
+
 func (s *Server) handleSend(w http.ResponseWriter, spec model.RequestSpec, env map[string]string) {
 	s.mu.Lock()
 	data := s.pageDataLocked("")
@@ -299,7 +442,73 @@ func (s *Server) handleSend(w http.ResponseWriter, spec model.RequestSpec, env m
 	}
 
 	data.SendResult = sr
+	data.History = s.recordHistory(spec, env, sr)
 	s.render(w, s.indexTmpl, data)
+}
+
+// recordHistory appends a single-send result to the in-memory history,
+// evicting the oldest entry once maxHistoryEntries is exceeded, and returns
+// the resulting history view list (newest first) for immediate rendering.
+func (s *Server) recordHistory(spec model.RequestSpec, env map[string]string, sr *sendResultView) []historyRowView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.nextHistoryID++
+	s.history = append(s.history, historyEntry{
+		ID:       s.nextHistoryID,
+		Spec:     cloneSpec(spec),
+		Env:      maps.Clone(env),
+		OK:       sr.OK,
+		Status:   sr.Status,
+		Duration: sr.Duration,
+		Bytes:    sr.Bytes,
+		Err:      sr.Err,
+	})
+	if len(s.history) > maxHistoryEntries {
+		s.history = s.history[len(s.history)-maxHistoryEntries:]
+	}
+	return s.historyViewsLocked()
+}
+
+// cloneSpec returns a copy of spec with its Headers map deep-copied, so the
+// caller can retain a reference (e.g. in a history entry) independent of any
+// later mutation of the original spec's Headers map.
+func cloneSpec(spec model.RequestSpec) model.RequestSpec {
+	spec.Headers = maps.Clone(spec.Headers)
+	return spec
+}
+
+// handleHistoryRestore loads a past single-send entry's Method/URL/Headers/
+// Body/Env back into the in-memory editing state (the same fields
+// POST /execute writes to) and redirects to the index page. IDs are never
+// reused, so a link to an entry evicted by the maxHistoryEntries cap fails
+// with a clear error instead of silently restoring the wrong entry.
+func (s *Server) handleHistoryRestore(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		http.Redirect(w, r, "/?error="+url.QueryEscape("履歴のIDが不正です"), http.StatusSeeOther)
+		return
+	}
+
+	s.mu.Lock()
+	var found *historyEntry
+	for i := range s.history {
+		if s.history[i].ID == id {
+			found = &s.history[i]
+			break
+		}
+	}
+	if found != nil {
+		s.spec = cloneSpec(found.Spec)
+		s.env = maps.Clone(found.Env)
+	}
+	s.mu.Unlock()
+
+	if found == nil {
+		http.Redirect(w, r, "/?error="+url.QueryEscape("その履歴は見つかりませんでした（保持件数の上限を超えて破棄された可能性があります）"), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model.RequestSpec, env map[string]string) {

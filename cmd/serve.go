@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -18,10 +19,15 @@ var (
 )
 
 var serveCmd = &cobra.Command{
-	Use:   "serve [request-file]",
+	Use:   "serve [request-file|collection-dir]",
 	Short: "Serve a local web UI for building/sending a request and running it against a CSV data file",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  serveE,
+	Long: "Serve a local web UI for building/sending a request and running it against a CSV data file.\n\n" +
+		"The argument may be a single request YAML file (today's behavior), a\n" +
+		"directory of request YAML files (a flat collection — enables the\n" +
+		"collection sidebar and \"save as\" in the UI), or omitted entirely to\n" +
+		"start from a blank request.",
+	Args: cobra.MaximumNArgs(1),
+	RunE: serveE,
 }
 
 func init() {
@@ -32,18 +38,26 @@ func init() {
 
 func serveE(_ *cobra.Command, args []string) error {
 	var requestPath string
-	var spec *model.RequestSpec
+	var collectionDir string
+	spec := &model.RequestSpec{Method: "GET"}
 
 	if len(args) == 1 {
-		requestPath = args[0]
-
-		var err error
-		spec, err = model.LoadRequest(requestPath)
+		info, err := os.Stat(args[0])
 		if err != nil {
 			return err
 		}
-	} else {
-		spec = &model.RequestSpec{Method: "GET"}
+
+		if info.IsDir() {
+			// Collection directory: start from a blank request; the user
+			// picks one from the sidebar to load it (GET /collection/{name}).
+			collectionDir = args[0]
+		} else {
+			requestPath = args[0]
+			spec, err = model.LoadRequest(requestPath)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	isDir, err := model.IsEnvDir(serveEnvFile)
@@ -70,6 +84,7 @@ func serveE(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	srv.CollectionDir = collectionDir
 
 	addr := fmt.Sprintf(":%d", servePort)
 	fmt.Printf("gp serve listening on http://localhost%s\n", addr)
