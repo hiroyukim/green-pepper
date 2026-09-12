@@ -160,6 +160,40 @@
   <div class="csv-preview" id="csv-preview"></div>
 </div>
 
+{{if .History}}
+<div class="card">
+  <h2><span class="icon">history</span>履歴</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Method</th>
+        <th>URL</th>
+        <th>Status</th>
+        <th>Time</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .History}}
+      <tr>
+        <td>{{.Method}}</td>
+        <td style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{.URL}}</td>
+        <td>
+          {{if .Err}}
+          <span class="fail"><span class="icon">cancel</span>{{.Err}}</span>
+          {{else}}
+          <span class="{{if .OK}}ok{{else}}fail{{end}}"><span class="icon">{{if .OK}}check_circle{{else}}cancel{{end}}</span>{{.Status}}</span>
+          {{end}}
+        </td>
+        <td>{{.Duration}}</td>
+        <td><a href="/history/{{.ID}}">復元</a></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
 <div class="actions">
   <button type="submit" name="action" value="send"><span class="icon">send</span>単発送信</button>
   <button type="submit" name="action" value="run" class="secondary"><span class="icon">play_arrow</span>CSVで実行</button>
