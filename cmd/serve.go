@@ -25,7 +25,7 @@ var serveCmd = &cobra.Command{
 }
 
 func init() {
-	serveCmd.Flags().StringVar(&serveEnvFile, "env", "", "YAML file of default template variables (e.g. base_url)")
+	serveCmd.Flags().StringVar(&serveEnvFile, "env", "", "YAML file of default template variables (e.g. base_url), or a directory of named environment YAML files")
 	serveCmd.Flags().DurationVar(&serveTimeout, "timeout", 30*time.Second, "per-request timeout")
 	serveCmd.Flags().IntVar(&servePort, "port", 8080, "port to listen on")
 }
@@ -46,12 +46,27 @@ func serveE(_ *cobra.Command, args []string) error {
 		spec = &model.RequestSpec{Method: "GET"}
 	}
 
-	env, err := model.LoadEnv(serveEnvFile)
+	isDir, err := model.IsEnvDir(serveEnvFile)
 	if err != nil {
 		return err
 	}
 
-	srv, err := server.New(spec, env, requestPath, serveEnvFile, serveTimeout)
+	var env map[string]string
+	var envDir *model.EnvDir
+	if isDir {
+		envDir, err = model.LoadEnvDir(serveEnvFile)
+		if err != nil {
+			return err
+		}
+		env = envDir.Envs[envDir.Names[0]]
+	} else {
+		env, err = model.LoadEnv(serveEnvFile)
+		if err != nil {
+			return err
+		}
+	}
+
+	srv, err := server.New(spec, env, requestPath, serveEnvFile, envDir, serveTimeout)
 	if err != nil {
 		return err
 	}
