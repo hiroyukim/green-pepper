@@ -1,5 +1,21 @@
 {{define "content"}}
 {{if .Error}}<div class="error-box"><span class="icon">error</span>{{.Error}}</div>{{end}}
+{{if .Saved}}<div class="notice-box"><span class="icon">check_circle</span>{{.Saved}}</div>{{end}}
+
+{{if .CollectionActive}}
+<div class="card collection-card">
+  <h2><span class="icon">folder_open</span>コレクション</h2>
+  {{if .CollectionNames}}
+  <ul class="collection-list">
+    {{range .CollectionNames}}
+    <li><a href="/collection/{{.}}">{{.}}</a></li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="meta">保存済みのリクエストはまだありません。</p>
+  {{end}}
+</div>
+{{end}}
 
 <form action="/execute" method="post" enctype="multipart/form-data" id="request-form" data-used-vars="{{.UsedVarsCSV}}">
 
@@ -201,6 +217,11 @@
   <button type="button" id="curl-copy-btn" class="secondary"><span class="icon">content_copy</span>cURLとしてコピー</button>
 </div>
 <div id="curl-copy-fallback"></div>
+
+<div class="actions save-as-actions">
+  <input type="text" name="name" placeholder="リクエスト名" {{if not .CollectionActive}}disabled title="コレクション（gp serve <ディレクトリ>）で起動すると使えます"{{end}}>
+  <button type="submit" name="action" value="save_as" class="secondary" {{if not .CollectionActive}}disabled title="コレクション（gp serve <ディレクトリ>）で起動すると使えます"{{end}}><span class="icon">save</span>名前を付けて保存</button>
+</div>
 
 </form>
 

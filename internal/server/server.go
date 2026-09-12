@@ -41,6 +41,12 @@ type Server struct {
 	EnvPath     string
 	Timeout     time.Duration
 
+	// CollectionDir, when non-empty, is a directory of "*.yaml"/"*.yml"
+	// request files (see internal/model/collection.go) that the UI can list,
+	// load from, and save into. Empty disables the collection feature
+	// entirely (no sidebar, no save-as, matching single-file/no-arg usage).
+	CollectionDir string
+
 	mu   sync.Mutex
 	spec model.RequestSpec
 	env  map[string]string
@@ -89,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("POST /execute", s.handleExecute)
 	mux.HandleFunc("GET /history/{id}", s.handleHistoryRestore)
+	mux.HandleFunc("GET /collection/{name}", s.handleLoadFromCollection)
 	return mux
 }
 
@@ -96,6 +103,7 @@ type pageData struct {
 	RequestPath string
 	EnvPath     string
 	Error       string
+	Saved       string
 
 	Method      string
 	URL         string
@@ -103,6 +111,9 @@ type pageData struct {
 	Body        string
 	EnvText     string
 	UsedVarsCSV string
+
+	CollectionActive bool
+	CollectionNames  []string
 
 	SendResult *sendResultView
 	History    []historyRowView
@@ -160,7 +171,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // pageDataLocked builds pageData from the current in-memory spec/env. Callers
 // must hold s.mu.
 func (s *Server) pageDataLocked(errMsg string) pageData {
-	return pageData{
+	data := pageData{
 		RequestPath: s.RequestPath,
 		EnvPath:     s.EnvPath,
 		Error:       errMsg,
@@ -172,6 +183,20 @@ func (s *Server) pageDataLocked(errMsg string) pageData {
 		UsedVarsCSV: strings.Join(usedVars(s.spec), ","),
 		History:     s.historyViewsLocked(),
 	}
+
+	if s.CollectionDir != "" {
+		data.CollectionActive = true
+		names, err := model.ListCollection(s.CollectionDir)
+		if err != nil {
+			if data.Error == "" {
+				data.Error = "コレクションの読み込みに失敗しました: " + err.Error()
+			}
+		} else {
+			data.CollectionNames = names
+		}
+	}
+
+	return data
 }
 
 // historyViewsLocked returns the current history, newest first. Callers must
@@ -230,9 +255,64 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		s.handleDownload(w, spec)
 	case "run":
 		s.handleRunCSV(w, r, spec, env)
+	case "save_as":
+		s.handleSaveAs(w, r, spec)
 	default:
 		s.handleSend(w, spec, env)
 	}
+}
+
+// handleLoadFromCollection loads the named request from the collection
+// directory into the current in-memory spec (env is left untouched — that is
+// issue #10's concern) and redirects back to the index page. A no-op 404 when
+// the collection feature is disabled or the request can't be found/loaded.
+func (s *Server) handleLoadFromCollection(w http.ResponseWriter, r *http.Request) {
+	if s.CollectionDir == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	name := r.PathValue("name")
+	spec, err := model.LoadFromCollection(s.CollectionDir, name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	s.mu.Lock()
+	s.spec = *spec
+	s.mu.Unlock()
+
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleSaveAs saves the current (just-updated-from-the-form) spec into the
+// collection directory under the "name" form field, then re-renders the
+// index page with a success or error message.
+func (s *Server) handleSaveAs(w http.ResponseWriter, r *http.Request, spec model.RequestSpec) {
+	name := strings.TrimSpace(r.FormValue("name"))
+
+	if s.CollectionDir == "" {
+		s.mu.Lock()
+		data := s.pageDataLocked("コレクションが指定されていません。`gp serve <collection-dir>` でディレクトリを指定して起動してください")
+		s.mu.Unlock()
+		s.render(w, s.indexTmpl, data)
+		return
+	}
+
+	if err := model.SaveToCollection(s.CollectionDir, name, spec); err != nil {
+		s.mu.Lock()
+		data := s.pageDataLocked("保存に失敗しました: " + err.Error())
+		s.mu.Unlock()
+		s.render(w, s.indexTmpl, data)
+		return
+	}
+
+	s.mu.Lock()
+	data := s.pageDataLocked("")
+	s.mu.Unlock()
+	data.Saved = fmt.Sprintf("%q として保存しました", name)
+	s.render(w, s.indexTmpl, data)
 }
 
 func (s *Server) handleSend(w http.ResponseWriter, spec model.RequestSpec, env map[string]string) {
