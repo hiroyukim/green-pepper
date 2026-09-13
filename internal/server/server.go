@@ -4,6 +4,7 @@ package server
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"maps"
@@ -122,6 +123,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /environment", s.handleSwitchEnv)
 	mux.HandleFunc("GET /history/{id}", s.handleHistoryRestore)
 	mux.HandleFunc("GET /collection/{name}", s.handleLoadFromCollection)
+	mux.HandleFunc("POST /api/send", s.handleAPISend)
+	mux.HandleFunc("POST /api/run", s.handleAPIRun)
 	return mux
 }
 
@@ -634,6 +637,205 @@ func linesToMap(text, sep string) map[string]string {
 		m[strings.TrimSpace(name)] = strings.TrimSpace(value)
 	}
 	return m
+}
+
+// --- JSON API (issue #7): POST /api/send and POST /api/run ---
+//
+// These give AI agents/scripts a JSON-in-JSON-out alternative to the
+// HTML-form-based POST /execute. Unlike /execute, which persists the
+// submitted request/env into s.spec/s.env as the new baseline for the next
+// page load, these two handlers are deliberately stateless: they execute
+// exactly what's in the request and never touch s.spec/s.env. That makes
+// them safe to call repeatedly/concurrently from a script without disturbing
+// whatever a human has open in the browser at the same time. They also never
+// write an HTML error page — every failure, including a malformed request
+// body, comes back as a JSON object so a script never has to sniff the
+// response body to find out whether it got JSON or HTML.
+
+// apiSendRequest is the POST /api/send request body.
+type apiSendRequest struct {
+	Method  string            `json:"method"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers"`
+	Body    string            `json:"body"`
+	Env     map[string]string `json:"env"`
+}
+
+// apiSendResponse is the POST /api/send response body: the JSON shape of one
+// runner.SendResult.
+type apiSendResponse struct {
+	Status     string              `json:"status"`
+	StatusCode int                 `json:"statusCode"`
+	Ok         bool                `json:"ok"`
+	DurationMs float64             `json:"durationMs"`
+	Bytes      int64               `json:"bytes"`
+	Headers    map[string][]string `json:"headers"`
+	Body       string              `json:"body"`
+	Error      string              `json:"error"`
+}
+
+// apiRunResult is one element of the POST /api/run response array: the JSON
+// shape of one runner.Result. Field names/JSON tags are kept identical to
+// report.jsonResult (internal/report/json.go, used by `gp run --format
+// json`) so the two JSON representations stay consistent; that type is
+// unexported so this is a separate, parallel definition rather than a shared
+// one.
+type apiRunResult struct {
+	Index      int               `json:"index"`
+	Status     string            `json:"status"`
+	StatusCode int               `json:"statusCode"`
+	Ok         bool              `json:"ok"`
+	DurationMs float64           `json:"durationMs"`
+	Bytes      int64             `json:"bytes"`
+	Row        map[string]string `json:"row,omitempty"`
+	Error      string            `json:"error"`
+}
+
+// apiErrorBody is the JSON shape of an API error response.
+type apiErrorBody struct {
+	Error string `json:"error"`
+}
+
+// writeAPIJSON writes v as the JSON response body with the given status code.
+func writeAPIJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeAPIError writes a {"error": msg} JSON body with the given status
+// code. Used for every failure path in the JSON API handlers, so a script
+// never receives an HTML error page from these endpoints.
+func writeAPIError(w http.ResponseWriter, status int, msg string) {
+	writeAPIJSON(w, status, apiErrorBody{Error: msg})
+}
+
+// parseJSONStringMap decodes s (a JSON object of string->string, e.g.
+// `{"Accept":"application/json"}`) into a map. An empty/blank s yields a nil
+// map and no error, so the "headers"/"env" form fields of POST /api/run can
+// be omitted entirely.
+func parseJSONStringMap(s string) (map[string]string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// handleAPISend implements POST /api/send: decodes a JSON request body,
+// sends it via runner.Send (the same function handleSend uses), and responds
+// with the result as JSON. It does not read or modify s.spec/s.env at all —
+// every field needed to build the request comes from the request body.
+func (s *Server) handleAPISend(w http.ResponseWriter, r *http.Request) {
+	var req apiSendRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid JSON request body: "+err.Error())
+		return
+	}
+
+	method := strings.TrimSpace(req.Method)
+	if method == "" {
+		method = "GET" // matches model.LoadRequest's default-method handling
+	}
+	spec := model.RequestSpec{
+		Method:  method,
+		URL:     strings.TrimSpace(req.URL),
+		Headers: req.Headers,
+		Body:    req.Body,
+	}
+
+	client := &http.Client{Timeout: s.Timeout}
+	result := runner.Send(client, &spec, req.Env, maxSendPreviewBody)
+
+	resp := apiSendResponse{
+		Status:     result.Status,
+		StatusCode: result.StatusCode,
+		Ok:         result.Ok(),
+		DurationMs: float64(result.Duration.Microseconds()) / 1000.0,
+		Bytes:      int64(len(result.Body)),
+		Headers:    result.Headers,
+		Body:       string(result.Body),
+	}
+	if result.Err != nil {
+		resp.Error = result.Err.Error()
+	}
+
+	writeAPIJSON(w, http.StatusOK, resp)
+}
+
+// handleAPIRun implements POST /api/run: decodes a multipart/form-data
+// request (method/url/body as plain fields, headers/env as JSON-object
+// strings, csv as a file field), runs it via runner.Run (the same function
+// handleRunCSV uses), and responds with one JSON object per CSV row. Like
+// handleAPISend, it does not read or modify s.spec/s.env.
+func (s *Server) handleAPIRun(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid multipart form: "+err.Error())
+		return
+	}
+
+	method := strings.TrimSpace(r.FormValue("method"))
+	if method == "" {
+		method = "GET"
+	}
+
+	headers, err := parseJSONStringMap(r.FormValue("headers"))
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid \"headers\" field: must be a JSON object string: "+err.Error())
+		return
+	}
+	env, err := parseJSONStringMap(r.FormValue("env"))
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid \"env\" field: must be a JSON object string: "+err.Error())
+		return
+	}
+
+	spec := model.RequestSpec{
+		Method:  method,
+		URL:     strings.TrimSpace(r.FormValue("url")),
+		Headers: headers,
+		Body:    r.FormValue("body"),
+	}
+
+	file, _, err := r.FormFile("csv")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "missing or unreadable \"csv\" file field: "+err.Error())
+		return
+	}
+	defer file.Close()
+
+	data, err := model.ParseCSV(file)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "failed to parse csv: "+err.Error())
+		return
+	}
+
+	client := &http.Client{Timeout: s.Timeout}
+	results := runner.Run(client, &spec, env, data.Rows)
+
+	out := make([]apiRunResult, len(results))
+	for i, res := range results {
+		errMsg := ""
+		if res.Err != nil {
+			errMsg = res.Err.Error()
+		}
+		out[i] = apiRunResult{
+			Index:      i + 1,
+			Status:     res.Status,
+			StatusCode: res.StatusCode,
+			Ok:         res.Ok(),
+			DurationMs: float64(res.Duration.Microseconds()) / 1000.0,
+			Bytes:      res.Bytes,
+			Row:        res.Row,
+			Error:      errMsg,
+		}
+	}
+
+	writeAPIJSON(w, http.StatusOK, out)
 }
 
 // usedVars returns the sorted, de-duplicated list of "{{var}}" names
