@@ -38,6 +38,10 @@ type Result struct {
 	// no test_script (the common case) — Ok() below is unaffected by
 	// TestResults in that case, so this is a behavior-preserving addition.
 	TestResults []TestResult
+	// ConsoleLogs holds any console.log/warn/error output the test_script
+	// produced, if it has one. Empty/nil when the request has no test_script,
+	// exactly like TestResults.
+	ConsoleLogs []string
 	// Headers and Body hold the response's headers and (capped at
 	// maxRowDetailBody, truncated-marker-suffixed if cut short) body, but
 	// only when the run was started with RunOptions.CaptureResponses true.
@@ -282,10 +286,7 @@ func runOne(client *http.Client, spec *model.RequestSpec, vars, row map[string]s
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, readLimit))
 	extra, _ := io.Copy(io.Discard, resp.Body)
 
-	var testResults []TestResult
-	if spec.TestScript != "" {
-		testResults = runTestScript(spec.TestScript, resp.StatusCode, resp.Status, body, vars)
-	}
+	testResults, logs := runTestScript(spec.TestScript, resp.StatusCode, resp.Status, body, vars)
 
 	result := Result{
 		Row:         row,
@@ -294,6 +295,7 @@ func runOne(client *http.Client, spec *model.RequestSpec, vars, row map[string]s
 		Duration:    duration,
 		Bytes:       int64(len(body)) + extra,
 		TestResults: testResults,
+		ConsoleLogs: logs,
 	}
 
 	if captureResponses {
@@ -329,6 +331,9 @@ type SendResult struct {
 	// request's test_script, if it has one. Empty/nil when the request has
 	// no test_script.
 	TestResults []TestResult
+	// ConsoleLogs holds any console.log/warn/error output the test_script
+	// produced, if it has one. Empty/nil when the request has no test_script.
+	ConsoleLogs []string
 }
 
 // Ok reports whether the request completed with a successful (2xx) status
@@ -368,8 +373,9 @@ func Send(client *http.Client, spec *model.RequestSpec, vars map[string]string, 
 	}
 
 	var testResults []TestResult
+	var logs []string
 	if spec.TestScript != "" {
-		testResults = runTestScript(spec.TestScript, resp.StatusCode, resp.Status, body, vars)
+		testResults, logs = runTestScript(spec.TestScript, resp.StatusCode, resp.Status, body, vars)
 	}
 
 	return SendResult{
@@ -379,5 +385,6 @@ func Send(client *http.Client, spec *model.RequestSpec, vars map[string]string, 
 		Headers:     resp.Header,
 		Body:        body,
 		TestResults: testResults,
+		ConsoleLogs: logs,
 	}
 }

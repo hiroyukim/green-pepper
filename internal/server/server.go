@@ -193,6 +193,10 @@ type sendResultView struct {
 	Body        string
 	Err         string
 	TestResults []testResultView
+	// ConsoleLogs holds any console.log/warn/error output the request's
+	// test_script produced, if it has one; nil/empty otherwise, in which
+	// case the response block's Console section is not rendered at all.
+	ConsoleLogs []string
 }
 
 type headerView struct {
@@ -475,6 +479,7 @@ func (s *Server) handleSend(w http.ResponseWriter, spec model.RequestSpec, env m
 		Bytes:       int64(len(result.Body)),
 		Body:        string(result.Body),
 		TestResults: testResultViews(result.TestResults),
+		ConsoleLogs: result.ConsoleLogs,
 	}
 	if result.Err != nil {
 		sr.Err = result.Err.Error()

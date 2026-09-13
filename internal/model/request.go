@@ -16,7 +16,7 @@ type RequestSpec struct {
 	Body    string            `yaml:"body"`
 	// TestScript is a JavaScript snippet (executed with goja, see
 	// internal/runner's runTestScript) run against the response after the
-	// request completes, to verify it (Postman-style pm.test(...)). Unlike
+	// request completes, to verify it (via a pm.test(...)-style API). Unlike
 	// Method/URL/Headers/Body, it is deliberately NOT run through
 	// tmpl.Render/"{{var}}" substitution — it reads variables via the
 	// pm.variables.get(name) API instead. Empty (the common case) means no
