@@ -228,6 +228,25 @@ test_script: |
 結果はCLIの表・JSON出力に`TESTS`列/`tests`フィールドとして表示され、`gp serve`の単発送信・CSV実行の結果画面にも
 反映される。
 
+### デバッグ出力 (`console.log`)
+
+`test_script`の中では`console.log(...)` / `console.warn(...)` / `console.error(...)`が使える。複数の引数はスペース
+区切りで連結され、オブジェクトは可能であればJSON文字列化される。`warn`/`error`は行の先頭に`[warn]`/`[error]`が付く
+以外は`log`と同じ扱いで、レベルを問わず1回の実行分としてまとめて記録される（記録できる行数には上限があり、
+超えた分は`...(log limit reached)`という1行にまとめられる)。
+
+```yaml
+test_script: |
+  console.log("checking id", pm.variables.get("id"));
+  pm.test("status is 200", function () {
+    if (pm.response.code !== 200) throw new Error("expected 200, got " + pm.response.code);
+  });
+```
+
+記録された出力は`gp run --format json`（および`gp serve`のJSONエクスポート）の`logs`フィールドに配列として入る
+（表形式`table`には出ない）。`gp serve`では単発送信のレスポンス画面にも「コンソール出力」として表示される。
+CSV/コレクション実行の各行での表示は今のところ対象外。
+
 ## Releases
 
 `v*` 形式のタグをpushすると、GitHub Actions ([goreleaser](https://goreleaser.com/)) が

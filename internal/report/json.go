@@ -22,6 +22,9 @@ type jsonResult struct {
 	// test_script, so JSON output for the common case is unchanged from
 	// before this field existed.
 	Tests []jsonTestResult `json:"tests,omitempty"`
+	// Logs holds any console.log/warn/error output the test_script produced,
+	// if it has one. Omitted entirely when empty/absent, same as Tests.
+	Logs []string `json:"logs,omitempty"`
 }
 
 // jsonTestResult is the JSON shape of one runner.TestResult.
@@ -65,9 +68,21 @@ func resultsToJSON(results []runner.Result) []jsonResult {
 			Row:        r.Row,
 			Error:      errMsg,
 			Tests:      testResultsToJSON(r.TestResults),
+			Logs:       consoleLogsToJSON(r.ConsoleLogs),
 		}
 	}
 	return out
+}
+
+// consoleLogsToJSON returns logs unchanged unless it's empty, in which case
+// it returns nil (which json.Marshal with omitempty renders as an absent
+// field) — mirroring testResultsToJSON's empty-input handling for the
+// parallel "logs" field.
+func consoleLogsToJSON(logs []string) []string {
+	if len(logs) == 0 {
+		return nil
+	}
+	return logs
 }
 
 // PrintJSON writes results to w as a JSON array, one object per row/request.
@@ -101,6 +116,9 @@ type jsonCollectionResult struct {
 	// Tests holds the request's test_script results, if it has one; see
 	// jsonResult.Tests.
 	Tests []jsonTestResult `json:"tests,omitempty"`
+	// Logs holds the request's test_script console output, if it has one;
+	// see jsonResult.Logs.
+	Logs []string `json:"logs,omitempty"`
 }
 
 // collectionResultsToJSON converts results into the jsonCollectionResult
@@ -124,6 +142,7 @@ func collectionResultsToJSON(results []runner.CollectionResult) []jsonCollection
 			Row:        r.Row,
 			Error:      errMsg,
 			Tests:      testResultsToJSON(r.TestResults),
+			Logs:       consoleLogsToJSON(r.ConsoleLogs),
 		}
 	}
 	return out
