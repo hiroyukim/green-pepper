@@ -190,6 +190,19 @@
   </div>
   <div id="csv-warning"></div>
   <div class="csv-preview" id="csv-preview"></div>
+  <div class="row">
+    <div class="field">
+      <label for="iterations">反復回数</label>
+      <input type="number" id="iterations" name="iterations" value="1" min="1">
+    </div>
+    <div class="field">
+      <label for="delay">リクエスト間の遅延</label>
+      <input type="text" id="delay" name="delay" placeholder="例: 500ms">
+    </div>
+    <div class="field">
+      <label for="stop_on_error"><input type="checkbox" id="stop_on_error" name="stop_on_error"> 失敗時に停止</label>
+    </div>
+  </div>
 </div>
 
 {{if .History}}

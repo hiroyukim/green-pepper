@@ -29,15 +29,68 @@ func (r Result) Ok() bool {
 }
 
 // Run executes spec once for every row in rows, merging env as the default
-// variable set (a row value with the same name overrides env).
+// variable set (a row value with the same name overrides env). It is a thin
+// wrapper around RunOpts with the zero-value RunOptions (one pass over rows,
+// no delay, never stopping early on failure) — its behavior is unchanged by
+// the addition of RunOpts.
 func Run(client *http.Client, spec *model.RequestSpec, env map[string]string, rows []map[string]string) []Result {
+	return RunOpts(client, spec, env, rows, RunOptions{})
+}
+
+// RunOptions controls how a run iterates and reacts to failures. The zero
+// value reproduces the original Run/RunCollection behavior exactly:
+// Iterations <= 1 is treated as a single pass over rows, Delay 0 means no
+// wait between requests, and StopOnError false means every row/spec is
+// executed regardless of earlier failures.
+type RunOptions struct {
+	// Iterations is how many times the full set of rows (or, with no CSV,
+	// the single implicit request) is repeated. <= 1 means exactly once.
+	Iterations int
+	// Delay is how long to wait before each request execution after the
+	// very first one overall. Zero means no delay.
+	Delay time.Duration
+	// StopOnError, when true, stops the run at the first failed request
+	// (Result.Ok() false) instead of continuing through the rest.
+	StopOnError bool
+}
+
+// buildRowSequence expands rows into the effective, in-order sequence of rows
+// to execute for the given iteration count: rows itself (or a single
+// implicit empty row when rows is empty) repeated iterations times. An
+// iterations of <= 1 returns rows (or the implicit row) unchanged, exactly
+// matching the pre-iteration behavior of Run/RunCollection.
+func buildRowSequence(rows []map[string]string, iterations int) []map[string]string {
 	if len(rows) == 0 {
 		rows = []map[string]string{{}}
 	}
+	if iterations <= 1 {
+		return rows
+	}
 
-	results := make([]Result, 0, len(rows))
-	for _, row := range rows {
-		results = append(results, runOne(client, spec, mergeVars(env, row), row))
+	seq := make([]map[string]string, 0, len(rows)*iterations)
+	for i := 0; i < iterations; i++ {
+		seq = append(seq, rows...)
+	}
+	return seq
+}
+
+// RunOpts is Run with explicit RunOptions: it can repeat the row sequence
+// multiple times (opts.Iterations), wait between requests (opts.Delay), and
+// stop at the first failure (opts.StopOnError). See RunOptions for the exact
+// semantics of each field.
+func RunOpts(client *http.Client, spec *model.RequestSpec, env map[string]string, rows []map[string]string, opts RunOptions) []Result {
+	seq := buildRowSequence(rows, opts.Iterations)
+
+	results := make([]Result, 0, len(seq))
+	for i, row := range seq {
+		if i > 0 && opts.Delay > 0 {
+			time.Sleep(opts.Delay)
+		}
+		res := runOne(client, spec, mergeVars(env, row), row)
+		results = append(results, res)
+		if opts.StopOnError && !res.Ok() {
+			break
+		}
 	}
 	return results
 }
@@ -67,21 +120,42 @@ type CollectionResult struct {
 // all of specs for row 2, etc. — this is the deterministic order the issue
 // asks for (specs themselves should already be sorted by name by the
 // caller, e.g. via model.ListCollection's sorted output).
+// It is a thin wrapper around RunCollectionOpts with the zero-value
+// RunOptions — its behavior is unchanged by the addition of
+// RunCollectionOpts.
 func RunCollection(client *http.Client, specs []NamedSpec, env map[string]string, rows []map[string]string) []CollectionResult {
-	if len(rows) == 0 {
-		rows = []map[string]string{{}}
-	}
+	return RunCollectionOpts(client, specs, env, rows, RunOptions{})
+}
 
-	results := make([]CollectionResult, 0, len(specs)*len(rows))
-	for rowIdx, row := range rows {
+// RunCollectionOpts is RunCollection with explicit RunOptions: it can repeat
+// the row sequence multiple times (opts.Iterations), wait between every
+// request execution across all specs and rows (opts.Delay), and stop at the
+// first failure (opts.StopOnError), abandoning the rest of that row's specs
+// and any remaining rows. See RunOptions for the exact semantics of each
+// field.
+func RunCollectionOpts(client *http.Client, specs []NamedSpec, env map[string]string, rows []map[string]string, opts RunOptions) []CollectionResult {
+	seq := buildRowSequence(rows, opts.Iterations)
+
+	results := make([]CollectionResult, 0, len(specs)*len(seq))
+	n := 0
+outer:
+	for rowIdx, row := range seq {
 		vars := mergeVars(env, row)
 		for _, ns := range specs {
+			if n > 0 && opts.Delay > 0 {
+				time.Sleep(opts.Delay)
+			}
+			n++
+			res := runOne(client, ns.Spec, vars, row)
 			results = append(results, CollectionResult{
 				RowIndex: rowIdx,
 				Row:      row,
 				Name:     ns.Name,
-				Result:   runOne(client, ns.Spec, vars, row),
+				Result:   res,
 			})
+			if opts.StopOnError && !res.Ok() {
+				break outer
+			}
 		}
 	}
 	return results
