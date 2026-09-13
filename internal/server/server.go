@@ -200,6 +200,25 @@ type headerView struct {
 	Value string
 }
 
+// headerViews converts an http.Header into the display-ready, name-sorted
+// form shared by the single-send response block (sendResultView.Headers) and
+// the CSV/collection results table's per-row detail (rowView.Headers).
+func headerViews(h http.Header) []headerView {
+	if len(h) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(h))
+	for name := range h {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	views := make([]headerView, 0, len(names))
+	for _, name := range names {
+		views = append(views, headerView{Name: name, Value: strings.Join(h[name], ", ")})
+	}
+	return views
+}
+
 // testResultView is the display-ready form of a runner.TestResult, for the
 // single-send response block's "Tests" list.
 type testResultView struct {
@@ -460,14 +479,7 @@ func (s *Server) handleSend(w http.ResponseWriter, spec model.RequestSpec, env m
 	if result.Err != nil {
 		sr.Err = result.Err.Error()
 	}
-	names := make([]string, 0, len(result.Headers))
-	for name := range result.Headers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		sr.Headers = append(sr.Headers, headerView{Name: name, Value: strings.Join(result.Headers[name], ", ")})
-	}
+	sr.Headers = headerViews(result.Headers)
 
 	data.SendResult = sr
 	data.History = s.recordHistory(spec, env, sr)
@@ -582,7 +594,10 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 
 	stopOnError := r.FormValue("stop_on_error") != ""
 
-	opts := runner.RunOptions{Iterations: iterations, Delay: delay, StopOnError: stopOnError}
+	// CaptureResponses is always true here (unlike CLI `gp run`, which never
+	// sets it): the results table lets each row expand into its response
+	// headers/body (issue #42).
+	opts := runner.RunOptions{Iterations: iterations, Delay: delay, StopOnError: stopOnError, CaptureResponses: true}
 
 	client := &http.Client{Timeout: s.Timeout}
 
@@ -640,9 +655,12 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 				Values:       values,
 				Err:          errMsg,
 				TestsSummary: report.TestsSummary(res.TestResults),
+				Headers:      headerViews(res.Headers),
+				Body:         string(res.Body),
 			})
 		}
 
+		view.ColSpan = resultsColSpan(view)
 		s.render(w, s.resultsTmpl, view)
 		return
 	}
@@ -684,10 +702,28 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 			Values:       values,
 			Err:          errMsg,
 			TestsSummary: report.TestsSummary(res.TestResults),
+			Headers:      headerViews(res.Headers),
+			Body:         string(res.Body),
 		})
 	}
 
+	view.ColSpan = resultsColSpan(view)
 	s.render(w, s.resultsTmpl, view)
+}
+
+// resultsColSpan returns the total number of columns the results table
+// renders for view, given its optional Request/Tests columns — see
+// resultsView.ColSpan.
+func resultsColSpan(view resultsView) int {
+	// Fixed columns: #, Status, Time, Size, Error.
+	n := 5 + len(view.Columns)
+	if view.Collection {
+		n++
+	}
+	if view.HasTests {
+		n++
+	}
+	return n
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, spec model.RequestSpec) {
@@ -720,6 +756,13 @@ type resultsView struct {
 	// extra "Tests" column. Mirrors internal/report's Print/PrintCollection,
 	// which likewise only add their TESTS column when it isn't all-empty.
 	HasTests bool
+
+	// ColSpan is the total number of columns in the results table (fixed
+	// columns plus the CSV's own columns, plus Request/Tests when Collection/
+	// HasTests add them), computed once here rather than in the template so
+	// each row's expandable response-detail <tr> (issue #42) can span the
+	// full table width regardless of which optional columns are showing.
+	ColSpan int
 
 	// ResultsJSON is the same results, JSON-encoded (see
 	// report.ResultsToJSON / report.CollectionResultsToJSON), for the
@@ -754,6 +797,14 @@ type rowView struct {
 	// request has no test_script. Only rendered when the enclosing
 	// resultsView.HasTests is true.
 	TestsSummary string
+	// Headers and Body are this row's captured response headers/body (issue
+	// #42), populated whenever CaptureResponses was set on the run (always
+	// true for handleRunCSV). Body is "" when nothing was captured (e.g. an
+	// error before any response arrived), in which case the results
+	// template shows no expandable detail row for it, matching the
+	// empty-means-don't-render convention used by Name/TestsSummary above.
+	Headers []headerView
+	Body    string
 }
 
 func (s *Server) render(w http.ResponseWriter, tmpl *template.Template, data any) {
