@@ -95,6 +95,36 @@ func LoadFromCollection(dir, name string) (*RequestSpec, error) {
 	return nil, fmt.Errorf("request %q not found in collection", name)
 }
 
+// NamedRequestSpec pairs a loaded RequestSpec with its collection entry name.
+type NamedRequestSpec struct {
+	Name string
+	Spec *RequestSpec
+}
+
+// LoadAllFromCollection returns every request in the collection directory
+// dir, loaded and ordered by ListCollection's deterministic (sorted) name
+// order. It returns an error if dir has no requests, so callers don't need a
+// separate empty-collection check.
+func LoadAllFromCollection(dir string) ([]NamedRequestSpec, error) {
+	names, err := ListCollection(dir)
+	if err != nil {
+		return nil, err
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("collection %q has no requests", dir)
+	}
+
+	specs := make([]NamedRequestSpec, 0, len(names))
+	for _, name := range names {
+		spec, err := LoadFromCollection(dir, name)
+		if err != nil {
+			return nil, err
+		}
+		specs = append(specs, NamedRequestSpec{Name: name, Spec: spec})
+	}
+	return specs, nil
+}
+
 // SaveToCollection marshals spec as YAML (matching the format produced by the
 // "YAMLをダウンロード" download path) and writes it into dir under name+".yaml",
 // creating or overwriting the file. name is sanitized first to prevent path

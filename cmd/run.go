@@ -42,11 +42,6 @@ func runE(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --format %q: must be \"table\" or \"json\"", format)
 	}
 
-	spec, err := model.LoadRequest(args[0])
-	if err != nil {
-		return err
-	}
-
 	env, err := resolveRunEnv(envFile, envName)
 	if err != nil {
 		return err
@@ -64,6 +59,45 @@ func runE(_ *cobra.Command, args []string) error {
 	}
 
 	client := &http.Client{Timeout: timeout}
+
+	info, err := os.Stat(args[0])
+	if err != nil {
+		return err
+	}
+
+	if info.IsDir() {
+		named, err := model.LoadAllFromCollection(args[0])
+		if err != nil {
+			return err
+		}
+		specs := make([]runner.NamedSpec, len(named))
+		for i, n := range named {
+			specs[i] = runner.NamedSpec{Name: n.Name, Spec: n.Spec}
+		}
+
+		results := runner.RunCollection(client, specs, env, rows)
+
+		if format == "json" {
+			if err := report.PrintCollectionJSON(os.Stdout, results); err != nil {
+				return err
+			}
+		} else {
+			report.PrintCollection(os.Stdout, results, columns)
+		}
+
+		for _, r := range results {
+			if !r.Result.Ok() {
+				return fmt.Errorf("one or more requests failed")
+			}
+		}
+		return nil
+	}
+
+	spec, err := model.LoadRequest(args[0])
+	if err != nil {
+		return err
+	}
+
 	results := runner.Run(client, spec, env, rows)
 
 	if format == "json" {

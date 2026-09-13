@@ -43,3 +43,45 @@ func PrintJSON(w io.Writer, results []runner.Result) error {
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
 }
+
+// jsonCollectionResult is the JSON shape of one runner.CollectionResult, for
+// --format json output of a collection run.
+type jsonCollectionResult struct {
+	Iteration  int               `json:"iteration"`
+	Request    string            `json:"request"`
+	Status     string            `json:"status"`
+	StatusCode int               `json:"statusCode"`
+	Ok         bool              `json:"ok"`
+	DurationMs float64           `json:"durationMs"`
+	Bytes      int64             `json:"bytes"`
+	Row        map[string]string `json:"row,omitempty"`
+	Error      string            `json:"error"`
+}
+
+// PrintCollectionJSON writes results to w as a JSON array, one object per
+// request execution (every named request, once per CSV row).
+func PrintCollectionJSON(w io.Writer, results []runner.CollectionResult) error {
+	out := make([]jsonCollectionResult, len(results))
+	for i, cr := range results {
+		r := cr.Result
+		errMsg := ""
+		if r.Err != nil {
+			errMsg = r.Err.Error()
+		}
+		out[i] = jsonCollectionResult{
+			Iteration:  cr.RowIndex + 1,
+			Request:    cr.Name,
+			Status:     r.Status,
+			StatusCode: r.StatusCode,
+			Ok:         r.Ok(),
+			DurationMs: float64(r.Duration.Microseconds()) / 1000.0,
+			Bytes:      r.Bytes,
+			Row:        r.Row,
+			Error:      errMsg,
+		}
+	}
+
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
