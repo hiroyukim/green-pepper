@@ -188,7 +188,7 @@ gp run examples/request.yaml --data examples/users.csv --env examples/env.yaml
 ## テストスクリプト (`test_script`)
 
 リクエストテンプレートに`test_script`を書くと、レスポンスを受け取るたびに[goja](https://github.com/dop251/goja)
-(純Go実装のECMAScript処理系)でそのJavaScriptを実行し、Postmanの`pm.test(...)`に近い感覚でレスポンスを検証できる。
+(純Go実装のECMAScript処理系)でそのJavaScriptを実行し、`pm.test(...)`のような書き味でレスポンスを検証できる。
 `method` / `url` / `headers` / `body`と違い、`test_script`は`{{var}}`テンプレート展開の対象外——変数は
 `pm.variables.get(name)`経由で参照する。
 
@@ -209,7 +209,7 @@ test_script: |
   });
 ```
 
-利用できるAPIは以下のみ(Postmanの`pm.*`全体の再現ではない)。
+利用できるAPIは以下のみ(`pm.*`の完全なAPIセットを再現するものではない)。
 
 - `pm.response.code` / `pm.response.status`: ステータスコード（数値）とステータス行（文字列）
 - `pm.response.body`: レスポンスボディの文字列
