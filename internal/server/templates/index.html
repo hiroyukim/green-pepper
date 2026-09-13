@@ -328,6 +328,13 @@
     </ul>
   </div>
   {{end}}
+  {{if .SendResult.ConsoleLogs}}
+  <div class="field">
+    <label>コンソール出力（test_script）</label>
+    <pre>{{range .SendResult.ConsoleLogs}}{{.}}
+{{end}}</pre>
+  </div>
+  {{end}}
   {{end}}
 </div>
 {{end}}
