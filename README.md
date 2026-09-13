@@ -160,6 +160,49 @@ gp run examples/request.yaml --data examples/users.csv --env examples/env.yaml
 
 `gp serve`で組み立てたリクエストを「YAMLをダウンロード」で保存すれば、そのまま`<request-file>`として使える。
 
+## テストスクリプト (`test_script`)
+
+リクエストテンプレートに`test_script`を書くと、レスポンスを受け取るたびに[goja](https://github.com/dop251/goja)
+(純Go実装のECMAScript処理系)でそのJavaScriptを実行し、Postmanの`pm.test(...)`に近い感覚でレスポンスを検証できる。
+`method` / `url` / `headers` / `body`と違い、`test_script`は`{{var}}`テンプレート展開の対象外——変数は
+`pm.variables.get(name)`経由で参照する。
+
+```yaml
+method: GET
+url: "{{base_url}}/users/{{id}}"
+test_script: |
+  pm.test("status is 200", function () {
+    if (pm.response.code !== 200) throw new Error("expected 200, got " + pm.response.code);
+  });
+  pm.test("body has a name field", function () {
+    var body = pm.response.json();
+    if (!body.name) throw new Error("missing name");
+  });
+  pm.test("row id matches", function () {
+    var id = pm.variables.get("id");
+    if (String(pm.response.json().id) !== String(id)) throw new Error("id mismatch");
+  });
+```
+
+利用できるAPIは以下のみ(Postmanの`pm.*`全体の再現ではない)。
+
+- `pm.response.code` / `pm.response.status`: ステータスコード（数値）とステータス行（文字列）
+- `pm.response.body`: レスポンスボディの文字列
+- `pm.response.json()`: ボディを`JSON.parse`した値。不正なJSONの場合は例外を投げる
+- `pm.variables.get(name)`: そのリクエスト実行時点の変数（CSVの行+環境変数のマージ済み）を参照する。無ければ空文字列
+- `pm.test(name, fn)`: `fn`内で例外を投げれば失敗、投げなければ成功として、名前付きのテスト結果を記録する
+
+`pm.test`は1つ失敗しても以降の`pm.test`の実行は止めない。スクリプト全体には5秒のタイムアウトがあり、無限ループなどで
+時間切れになった場合や、構文エラー・`pm.test`の外で例外が起きた場合は`test_script`という名前の1件の失敗として記録される
+（`gp run`/`gp serve`プロセス自体がクラッシュしたりハングしたりすることはない）。
+
+テストが1つでも失敗すると、そのリクエストのステータスコードが2xxであっても失敗扱いになり、`gp run`の終了コード・
+`--stop-on-error`の判定に反映される。`test_script`が無いリクエストの合否判定はステータスコードのみで、これまでと
+完全に同じ。
+
+結果はCLIの表・JSON出力に`TESTS`列/`tests`フィールドとして表示され、`gp serve`の単発送信・CSV実行の結果画面にも
+反映される。
+
 ## Releases
 
 `v*` 形式のタグをpushすると、GitHub Actions ([goreleaser](https://goreleaser.com/)) が

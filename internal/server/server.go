@@ -140,6 +140,7 @@ type pageData struct {
 	URL         string
 	HeadersText string
 	Body        string
+	TestScript  string
 	EnvText     string
 	UsedVarsCSV string
 
@@ -183,19 +184,39 @@ type historyRowView struct {
 }
 
 type sendResultView struct {
-	StatusCode int
-	Status     string
-	OK         bool
-	Duration   string
-	Bytes      int64
-	Headers    []headerView
-	Body       string
-	Err        string
+	StatusCode  int
+	Status      string
+	OK          bool
+	Duration    string
+	Bytes       int64
+	Headers     []headerView
+	Body        string
+	Err         string
+	TestResults []testResultView
 }
 
 type headerView struct {
 	Name  string
 	Value string
+}
+
+// testResultView is the display-ready form of a runner.TestResult, for the
+// single-send response block's "Tests" list.
+type testResultView struct {
+	Name   string
+	Passed bool
+	Error  string
+}
+
+func testResultViews(results []runner.TestResult) []testResultView {
+	if len(results) == 0 {
+		return nil
+	}
+	views := make([]testResultView, len(results))
+	for i, t := range results {
+		views[i] = testResultView{Name: t.Name, Passed: t.Passed, Error: t.Error}
+	}
+	return views
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -216,6 +237,7 @@ func (s *Server) pageDataLocked(errMsg string) pageData {
 		URL:           s.spec.URL,
 		HeadersText:   mapToLines(s.spec.Headers, ": "),
 		Body:          s.spec.Body,
+		TestScript:    s.spec.TestScript,
 		EnvText:       mapToLines(s.env, "="),
 		UsedVarsCSV:   strings.Join(usedVars(s.spec), ","),
 		EnvNames:      append([]string(nil), s.envNames...),
@@ -279,10 +301,11 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.spec = model.RequestSpec{
-		Method:  method,
-		URL:     strings.TrimSpace(r.FormValue("url")),
-		Headers: linesToMap(r.FormValue("headers"), ":"),
-		Body:    r.FormValue("body"),
+		Method:     method,
+		URL:        strings.TrimSpace(r.FormValue("url")),
+		Headers:    linesToMap(r.FormValue("headers"), ":"),
+		Body:       r.FormValue("body"),
+		TestScript: r.FormValue("test_script"),
 	}
 	s.env = linesToMap(r.FormValue("env"), "=")
 	spec := s.spec
@@ -426,12 +449,13 @@ func (s *Server) handleSend(w http.ResponseWriter, spec model.RequestSpec, env m
 	result := runner.Send(client, &spec, env, maxSendPreviewBody)
 
 	sr := &sendResultView{
-		StatusCode: result.StatusCode,
-		Status:     result.Status,
-		OK:         result.Ok(),
-		Duration:   result.Duration.Round(time.Millisecond).String(),
-		Bytes:      int64(len(result.Body)),
-		Body:       string(result.Body),
+		StatusCode:  result.StatusCode,
+		Status:      result.Status,
+		OK:          result.Ok(),
+		Duration:    result.Duration.Round(time.Millisecond).String(),
+		Bytes:       int64(len(result.Body)),
+		Body:        string(result.Body),
+		TestResults: testResultViews(result.TestResults),
 	}
 	if result.Err != nil {
 		sr.Err = result.Err.Error()
@@ -587,6 +611,9 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 			if res.Ok() {
 				view.Passed++
 			}
+			if len(res.TestResults) > 0 {
+				view.HasTests = true
+			}
 			status := res.Status
 			if status == "" {
 				status = "-"
@@ -604,14 +631,15 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 				// report.PrintCollection's "#" column: it repeats across the
 				// requests belonging to the same row rather than counting
 				// each execution.
-				Index:    cr.RowIndex + 1,
-				Name:     cr.Name,
-				Status:   status,
-				OK:       res.Ok(),
-				Duration: res.Duration.Round(time.Millisecond).String(),
-				Bytes:    res.Bytes,
-				Values:   values,
-				Err:      errMsg,
+				Index:        cr.RowIndex + 1,
+				Name:         cr.Name,
+				Status:       status,
+				OK:           res.Ok(),
+				Duration:     res.Duration.Round(time.Millisecond).String(),
+				Bytes:        res.Bytes,
+				Values:       values,
+				Err:          errMsg,
+				TestsSummary: report.TestsSummary(res.TestResults),
 			})
 		}
 
@@ -632,6 +660,9 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 		if res.Ok() {
 			view.Passed++
 		}
+		if len(res.TestResults) > 0 {
+			view.HasTests = true
+		}
 		status := res.Status
 		if status == "" {
 			status = "-"
@@ -645,13 +676,14 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 			values[j] = res.Row[col]
 		}
 		view.Rows = append(view.Rows, rowView{
-			Index:    i + 1,
-			Status:   status,
-			OK:       res.Ok(),
-			Duration: res.Duration.Round(time.Millisecond).String(),
-			Bytes:    res.Bytes,
-			Values:   values,
-			Err:      errMsg,
+			Index:        i + 1,
+			Status:       status,
+			OK:           res.Ok(),
+			Duration:     res.Duration.Round(time.Millisecond).String(),
+			Bytes:        res.Bytes,
+			Values:       values,
+			Err:          errMsg,
+			TestsSummary: report.TestsSummary(res.TestResults),
 		})
 	}
 
@@ -683,6 +715,12 @@ type resultsView struct {
 	// an extra "Request" column only in that case.
 	Collection bool
 
+	// HasTests is true when at least one row's underlying result actually
+	// has test_script results, in which case the results template shows an
+	// extra "Tests" column. Mirrors internal/report's Print/PrintCollection,
+	// which likewise only add their TESTS column when it isn't all-empty.
+	HasTests bool
+
 	// ResultsJSON is the same results, JSON-encoded (see
 	// report.ResultsToJSON / report.CollectionResultsToJSON), for the
 	// "結果をダウンロード(JSON)" button (issue #36). It's embedded verbatim
@@ -711,6 +749,11 @@ type rowView struct {
 	Bytes    int64
 	Values   []string
 	Err      string
+	// TestsSummary is the compact "passed/total[: first failure]" form of
+	// this row's test_script results (see report.TestsSummary); "" when the
+	// request has no test_script. Only rendered when the enclosing
+	// resultsView.HasTests is true.
+	TestsSummary string
 }
 
 func (s *Server) render(w http.ResponseWriter, tmpl *template.Template, data any) {

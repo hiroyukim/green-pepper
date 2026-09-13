@@ -14,6 +14,14 @@ type RequestSpec struct {
 	URL     string            `yaml:"url"`
 	Headers map[string]string `yaml:"headers"`
 	Body    string            `yaml:"body"`
+	// TestScript is a JavaScript snippet (executed with goja, see
+	// internal/runner's runTestScript) run against the response after the
+	// request completes, to verify it (Postman-style pm.test(...)). Unlike
+	// Method/URL/Headers/Body, it is deliberately NOT run through
+	// tmpl.Render/"{{var}}" substitution — it reads variables via the
+	// pm.variables.get(name) API instead. Empty (the common case) means no
+	// test script runs at all.
+	TestScript string `yaml:"test_script,omitempty"`
 }
 
 // LoadRequest reads and parses a request template YAML file.
