@@ -76,8 +76,8 @@ func runTestScript(script string, statusCode int, status string, body []byte, va
 	_ = responseObj.Set("code", statusCode)
 	_ = responseObj.Set("status", status)
 	_ = responseObj.Set("body", string(body))
-	_ = responseObj.Set("json", func() (interface{}, error) {
-		var parsed interface{}
+	_ = responseObj.Set("json", func() (any, error) {
+		var parsed any
 		if err := json.Unmarshal(body, &parsed); err != nil {
 			return nil, fmt.Errorf("pm.response.json(): %w", err)
 		}
