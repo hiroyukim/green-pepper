@@ -19,8 +19,9 @@ type jsonResult struct {
 	Error      string            `json:"error"`
 }
 
-// PrintJSON writes results to w as a JSON array, one object per row/request.
-func PrintJSON(w io.Writer, results []runner.Result) error {
+// resultsToJSON converts results into the jsonResult shape shared by
+// PrintJSON and ResultsToJSON.
+func resultsToJSON(results []runner.Result) []jsonResult {
 	out := make([]jsonResult, len(results))
 	for i, r := range results {
 		errMsg := ""
@@ -38,10 +39,23 @@ func PrintJSON(w io.Writer, results []runner.Result) error {
 			Error:      errMsg,
 		}
 	}
+	return out
+}
 
+// PrintJSON writes results to w as a JSON array, one object per row/request.
+func PrintJSON(w io.Writer, results []runner.Result) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	return enc.Encode(resultsToJSON(results))
+}
+
+// ResultsToJSON marshals results into the same JSON shape PrintJSON writes
+// (one object per row/request, field names matching jsonResult), for callers
+// such as internal/server that need the encoded bytes directly rather than
+// writing to an io.Writer. This keeps the Web UI's exported JSON consistent
+// with `gp run --format json` without duplicating the field-mapping logic.
+func ResultsToJSON(results []runner.Result) ([]byte, error) {
+	return json.Marshal(resultsToJSON(results))
 }
 
 // jsonCollectionResult is the JSON shape of one runner.CollectionResult, for
@@ -58,9 +72,9 @@ type jsonCollectionResult struct {
 	Error      string            `json:"error"`
 }
 
-// PrintCollectionJSON writes results to w as a JSON array, one object per
-// request execution (every named request, once per CSV row).
-func PrintCollectionJSON(w io.Writer, results []runner.CollectionResult) error {
+// collectionResultsToJSON converts results into the jsonCollectionResult
+// shape shared by PrintCollectionJSON and CollectionResultsToJSON.
+func collectionResultsToJSON(results []runner.CollectionResult) []jsonCollectionResult {
 	out := make([]jsonCollectionResult, len(results))
 	for i, cr := range results {
 		r := cr.Result
@@ -80,8 +94,21 @@ func PrintCollectionJSON(w io.Writer, results []runner.CollectionResult) error {
 			Error:      errMsg,
 		}
 	}
+	return out
+}
 
+// PrintCollectionJSON writes results to w as a JSON array, one object per
+// request execution (every named request, once per CSV row).
+func PrintCollectionJSON(w io.Writer, results []runner.CollectionResult) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(out)
+	return enc.Encode(collectionResultsToJSON(results))
+}
+
+// CollectionResultsToJSON marshals results into the same JSON shape
+// PrintCollectionJSON writes (field names matching jsonCollectionResult), for
+// callers such as internal/server that need the encoded bytes directly
+// rather than writing to an io.Writer.
+func CollectionResultsToJSON(results []runner.CollectionResult) ([]byte, error) {
+	return json.Marshal(collectionResultsToJSON(results))
 }
