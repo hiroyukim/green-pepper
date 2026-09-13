@@ -38,6 +38,54 @@ gp serve examples/request.yaml --env examples/env.yaml --port 8080
 - **環境変数編集・YAMLダウンロード** — 環境変数もブラウザ上で編集でき、編集中のリクエストはYAMLとしてダウンロードして`gp run`にそのまま使い回せる
 - **複数環境の切り替え** — `--env`にディレクトリを渡すと、直下の`*.yaml`/`*.yml`ファイル(拡張子を除いたファイル名が環境名になる)がそれぞれ1つの環境として読み込まれ、「環境変数」カードにドロップダウンが表示される。切り替えると`#env`の内容がその環境の変数に置き換わり、「この環境を保存」で編集内容を元のファイルに書き戻せる。単一ファイル(または未指定)の場合、この操作は表示されず従来どおり
 
+### JSON API (`/api/send`, `/api/run`)
+
+`gp serve`はブラウザ向けのHTML画面に加えて、スクリプトやAIエージェントから使うための
+JSON専用エンドポイントも提供する。人間が使う場合はブラウザUIか`gp run --format json`を
+使えばよく、これらはあくまで自動化・AIエージェント連携向け。
+
+- **`POST /api/send`** — JSONボディでリクエストを1回実行し、結果をJSONで返す。UIの「単発送信」に相当する
+- **`POST /api/run`** — `multipart/form-data`でリクエストとCSVファイルを渡して一括実行し、
+  各行の結果をJSON配列で返す。UIの「CSVで実行」に相当する
+
+いずれも**ステートレス**——リクエストボディ/フォームに渡した内容だけを実行し、
+`POST /execute`と違って画面に表示中のリクエスト・環境変数（サーバー内部の状態）は一切変更しない。
+そのため、ブラウザで編集中の内容に影響を与えずに、スクリプトから何度呼び出しても安全。
+
+`POST /api/send`の例:
+
+```sh
+curl -X POST http://localhost:8080/api/send \
+  -H "Content-Type: application/json" \
+  -d '{
+    "method": "GET",
+    "url": "{{base_url}}/users/{{id}}",
+    "headers": {"Accept": "application/json"},
+    "env": {"base_url": "https://jsonplaceholder.typicode.com", "id": "1"}
+  }'
+```
+
+```json
+{"status":"200 OK","statusCode":200,"ok":true,"durationMs":42.5,"bytes":509,"headers":{"Content-Type":["application/json; charset=utf-8"]},"body":"...","error":""}
+```
+
+`POST /api/run`の例（`headers`/`env`はJSONオブジェクトを文字列にしたフォームフィールドとして渡す）:
+
+```sh
+curl -X POST http://localhost:8080/api/run \
+  -F "method=GET" \
+  -F "url={{base_url}}/users/{{id}}" \
+  -F 'env={"base_url":"https://jsonplaceholder.typicode.com"}' \
+  -F "csv=@examples/users.csv"
+```
+
+```json
+[{"index":1,"status":"200 OK","statusCode":200,"ok":true,"durationMs":13.0,"bytes":509,"row":{"id":"1"},"error":""}, ...]
+```
+
+いずれのエンドポイントも、リクエストボディ/フォームが不正な場合はHTMLではなく
+`{"error": "..."}`形式のJSONを400で返す。
+
 ### コレクション
 
 `request-file`の代わりにディレクトリを渡すと、そのディレクトリ配下の`*.yaml`/`*.yml`ファイル群を
