@@ -12,6 +12,31 @@
 go build -o gp .
 ```
 
+## 使ってみる
+
+`gp serve`を起動し、サンプルのCSVファイルを実際にアップロードして実行してみる。
+
+```sh
+./gp serve examples/request.yaml --env examples/env.yaml --port 8080 &
+```
+
+ブラウザで`http://localhost:8080`を開いてCSVファイルを選び「CSVで実行」を押してもいいし、`curl`で
+`gp serve`のフォーム送信先(`POST /execute`)に直接CSVをPOSTすることもできる。
+
+```sh
+curl -X POST http://localhost:8080/execute \
+  -F "method=GET" \
+  -F "url={{base_url}}/users/{{id}}" \
+  -F "headers=Accept: application/json" \
+  -F "body=" \
+  -F "env=base_url=https://jsonplaceholder.typicode.com" \
+  -F "action=run" \
+  -F "csv=@examples/users.csv"
+```
+
+`gp run`と同じ結果テーブルがHTMLとして返ってくる(`2/3 passed`など)。スクリプトやAIエージェントから
+JSONで結果を受け取りたい場合は、`gp run --format json`か後述の[`POST /api/run`](#json-api-apisend-apirun)を使う。
+
 ## Web UI (`gp serve`)
 
 ```sh
