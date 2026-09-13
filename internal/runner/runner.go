@@ -13,6 +13,18 @@ import (
 	"green-pepper/internal/tmpl"
 )
 
+// maxRowDetailBody caps how much of a response body is retained on a Result
+// when RunOptions.CaptureResponses is set (issue #42's per-row response
+// detail view in `gp serve`). It is deliberately smaller than
+// maxTestScriptBody/maxSendPreviewBody: a CSV run can have many rows, and
+// each one's captured body adds to the total held in memory for the whole
+// run, unlike those two which each bound a single response.
+const maxRowDetailBody = 64 << 10 // 64 KiB
+
+// truncatedBodyMarker is appended to a Result.Body that was cut short by
+// maxRowDetailBody, so it doesn't look like a complete-but-short response.
+const truncatedBodyMarker = "...(truncated)"
+
 // Result is the outcome of executing the request template for one row.
 type Result struct {
 	Row        map[string]string
@@ -30,6 +42,14 @@ type Result struct {
 	// produced, if it has one. Empty/nil when the request has no test_script,
 	// exactly like TestResults.
 	ConsoleLogs []string
+	// Headers and Body hold the response's headers and (capped at
+	// maxRowDetailBody, truncated-marker-suffixed if cut short) body, but
+	// only when the run was started with RunOptions.CaptureResponses true.
+	// Nil/empty otherwise (the common case: plain `gp run` never sets it),
+	// so this doesn't affect memory use or behavior outside `gp serve`'s CSV
+	// run, which is the only caller that sets CaptureResponses.
+	Headers http.Header
+	Body    []byte
 }
 
 // Ok reports whether the request completed with a successful (2xx) status
@@ -72,6 +92,13 @@ type RunOptions struct {
 	// StopOnError, when true, stops the run at the first failed request
 	// (Result.Ok() false) instead of continuing through the rest.
 	StopOnError bool
+	// CaptureResponses, when true, retains each row's response headers and
+	// (capped) body on its Result (see Result.Headers/Result.Body). False
+	// (the zero value, and what `gp run` always uses) reproduces the
+	// original body-discarding behavior exactly. `gp serve`'s CSV run sets
+	// this to true so its results table can show per-row response detail
+	// (issue #42).
+	CaptureResponses bool
 }
 
 // buildRowSequence expands rows into the effective, in-order sequence of rows
@@ -106,7 +133,7 @@ func RunOpts(client *http.Client, spec *model.RequestSpec, env map[string]string
 		if i > 0 && opts.Delay > 0 {
 			time.Sleep(opts.Delay)
 		}
-		res := runOne(client, spec, mergeVars(env, row), row)
+		res := runOne(client, spec, mergeVars(env, row), row, opts.CaptureResponses)
 		results = append(results, res)
 		if opts.StopOnError && !res.Ok() {
 			break
@@ -166,7 +193,7 @@ outer:
 				time.Sleep(opts.Delay)
 			}
 			n++
-			res := runOne(client, ns.Spec, vars, row)
+			res := runOne(client, ns.Spec, vars, row, opts.CaptureResponses)
 			results = append(results, CollectionResult{
 				RowIndex: rowIdx,
 				Row:      row,
@@ -216,7 +243,7 @@ func buildRequest(spec *model.RequestSpec, vars map[string]string) (*http.Reques
 	return req, nil
 }
 
-func runOne(client *http.Client, spec *model.RequestSpec, vars, row map[string]string) Result {
+func runOne(client *http.Client, spec *model.RequestSpec, vars, row map[string]string, captureResponses bool) Result {
 	req, err := buildRequest(spec, vars)
 	if err != nil {
 		return Result{Row: row, Err: err}
@@ -230,9 +257,10 @@ func runOne(client *http.Client, spec *model.RequestSpec, vars, row map[string]s
 	}
 	defer resp.Body.Close()
 
-	if spec.TestScript == "" {
-		// Fast path, unchanged from before test scripts existed: the body
-		// isn't needed for anything, so just count its bytes.
+	if spec.TestScript == "" && !captureResponses {
+		// Fast path, unchanged from before test scripts/response capture
+		// existed: the body isn't needed for anything, so just count its
+		// bytes.
 		n, _ := io.Copy(io.Discard, resp.Body)
 		return Result{
 			Row:        row,
@@ -243,16 +271,24 @@ func runOne(client *http.Client, spec *model.RequestSpec, vars, row map[string]s
 		}
 	}
 
-	// The test script needs the actual body (for pm.response.body/json()),
-	// capped at maxTestScriptBody; anything beyond that is still drained (not
-	// left unread, which would prevent connection reuse) and counted towards
-	// Bytes so the reported size matches the fast path's.
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxTestScriptBody))
+	// Either the test script needs the actual body (for
+	// pm.response.body/json()), or the caller asked to capture it for the
+	// row-detail view (issue #42) — read up to the larger of the two caps
+	// that applies (maxTestScriptBody dwarfs maxRowDetailBody, so a
+	// test-scripted request being captured still reads enough for the
+	// script). Anything beyond that is still drained (not left unread, which
+	// would prevent connection reuse) and counted towards Bytes so the
+	// reported size matches the fast path's.
+	readLimit := int64(maxRowDetailBody)
+	if spec.TestScript != "" {
+		readLimit = maxTestScriptBody
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, readLimit))
 	extra, _ := io.Copy(io.Discard, resp.Body)
 
 	testResults, logs := runTestScript(spec.TestScript, resp.StatusCode, resp.Status, body, vars)
 
-	return Result{
+	result := Result{
 		Row:         row,
 		StatusCode:  resp.StatusCode,
 		Status:      resp.Status,
@@ -261,6 +297,24 @@ func runOne(client *http.Client, spec *model.RequestSpec, vars, row map[string]s
 		TestResults: testResults,
 		ConsoleLogs: logs,
 	}
+
+	if captureResponses {
+		result.Headers = resp.Header
+		truncated := extra > 0 || int64(len(body)) > maxRowDetailBody
+		captured := body
+		if int64(len(captured)) > maxRowDetailBody {
+			captured = captured[:maxRowDetailBody]
+		}
+		if truncated {
+			b := make([]byte, 0, len(captured)+len(truncatedBodyMarker))
+			b = append(b, captured...)
+			b = append(b, truncatedBodyMarker...)
+			captured = b
+		}
+		result.Body = captured
+	}
+
+	return result
 }
 
 // SendResult is the outcome of a single ad-hoc request, capturing the full

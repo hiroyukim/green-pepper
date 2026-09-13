@@ -30,6 +30,18 @@
         {{if $.HasTests}}<td>{{.TestsSummary}}</td>{{end}}
         <td>{{.Err}}</td>
       </tr>
+      {{if .Body}}
+      <tr class="row-detail">
+        <td colspan="{{$.ColSpan}}">
+          <details>
+            <summary>詳細を見る</summary>
+            <pre>{{range .Headers}}{{.Name}}: {{.Value}}
+{{end}}
+{{.Body}}</pre>
+          </details>
+        </td>
+      </tr>
+      {{end}}
       {{end}}
     </tbody>
   </table>
