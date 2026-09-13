@@ -31,6 +31,12 @@ const (
 	maxUploadSize      = 10 << 20 // 10 MiB
 	maxSendPreviewBody = 1 << 20  // 1 MiB of response body shown in the UI
 	maxHistoryEntries  = 50       // oldest single-send history entries are dropped past this
+
+	// maxCSVHistoryEntries caps CSV/collection run history (issue #44). It's
+	// lower than maxHistoryEntries because each entry holds one row per CSV
+	// row/collection request, so a single entry can be much larger than one
+	// single-send history entry.
+	maxCSVHistoryEntries = 20
 )
 
 var varPattern = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
@@ -70,6 +76,17 @@ type Server struct {
 	// happens to reuse its old slot.
 	history       []historyEntry
 	nextHistoryID int
+
+	// csvHistory holds past CSV/collection run results, newest last, capped
+	// at maxCSVHistoryEntries (issue #44). Like history/nextHistoryID above,
+	// nextCSVHistoryID never resets or reuses IDs, so a /csv-history/{id}
+	// link to an entry evicted by the cap fails clearly instead of silently
+	// resolving to a different entry. Each entry stores only a lightweight
+	// csvHistoryRow snapshot per row — deliberately not the full rowView —
+	// so history memory stays bounded regardless of how much data rowView
+	// itself carries (see csvHistoryRow's doc comment).
+	csvHistory       []csvHistoryEntry
+	nextCSVHistoryID int
 
 	// Each page gets its own template set (layout.html + that page's
 	// content) so the "content" block each defines doesn't clash with
@@ -123,6 +140,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /execute", s.handleExecute)
 	mux.HandleFunc("GET /environment", s.handleSwitchEnv)
 	mux.HandleFunc("GET /history/{id}", s.handleHistoryRestore)
+	mux.HandleFunc("GET /csv-history/{id}", s.handleCSVHistoryShow)
 	mux.HandleFunc("GET /collection/{name}", s.handleLoadFromCollection)
 	mux.HandleFunc("POST /api/send", s.handleAPISend)
 	mux.HandleFunc("POST /api/run", s.handleAPIRun)
@@ -155,6 +173,10 @@ type pageData struct {
 
 	SendResult *sendResultView
 	History    []historyRowView
+
+	// CSVHistory lists past CSV/collection run results, newest first, for
+	// the "CSV実行履歴" card (issue #44).
+	CSVHistory []csvHistoryListView
 }
 
 // historyEntry is one past single-send action: what was sent (enough to
@@ -266,6 +288,7 @@ func (s *Server) pageDataLocked(errMsg string) pageData {
 		EnvNames:      append([]string(nil), s.envNames...),
 		ActiveEnvName: s.activeEnvName,
 		History:       s.historyViewsLocked(),
+		CSVHistory:    s.csvHistoryViewsLocked(),
 	}
 
 	if s.CollectionDir != "" {
@@ -556,6 +579,238 @@ func (s *Server) handleHistoryRestore(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// csvHistoryRow is a lightweight snapshot of one result row of a CSV/
+// collection run, for history storage (issue #44). It deliberately mirrors
+// only the small, bounded-size fields of rowView — never response headers,
+// bodies, or any other data whose size scales with the response — so CSV
+// history memory stays bounded regardless of what fields rowView carries
+// (e.g. issue #42's per-row response detail). Fields are copied one at a
+// time from rowView at the call site rather than via a wholesale struct
+// copy, precisely so this stays correct even as rowView grows new fields.
+type csvHistoryRow struct {
+	Index        int
+	Name         string // collection entry name, "" when not a collection run
+	Status       string
+	OK           bool
+	Duration     string
+	Bytes        int64
+	Values       []string
+	Err          string
+	TestsSummary string
+}
+
+// csvHistoryEntry is one past CSV/collection run, holding just enough to
+// redisplay its results page (GET /csv-history/{id}) — not enough to
+// reconstruct the original runner.Result values (see csvHistoryRow).
+type csvHistoryEntry struct {
+	ID        int
+	Timestamp time.Time
+	// Target is s.RequestPath, or s.CollectionDir when a collection is
+	// active, whichever describes what was run (see csvHistoryTarget).
+	Target     string
+	Collection bool
+	HasTests   bool
+	Columns    []string
+	Rows       []csvHistoryRow
+	Passed     int
+	Total      int
+}
+
+// csvHistoryListView is the display-ready form of a csvHistoryEntry for the
+// index page's "CSV実行履歴" card.
+type csvHistoryListView struct {
+	ID        int
+	Timestamp string
+	Target    string
+	Passed    int
+	Total     int
+}
+
+// csvHistoryTarget returns what to label a CSV/collection history entry
+// with: the collection directory when one is active, else the request
+// template path, else the same "新規リクエスト" placeholder results.html
+// already uses for an empty RequestPath. RequestPath/CollectionDir are fixed
+// at server startup, so this needs no locking.
+func (s *Server) csvHistoryTarget() string {
+	target := s.RequestPath
+	if s.CollectionDir != "" {
+		target = s.CollectionDir
+	}
+	if target == "" {
+		target = "新規リクエスト"
+	}
+	return target
+}
+
+// csvHistoryViewsLocked returns the current CSV/collection run history,
+// newest first. Callers must hold s.mu.
+func (s *Server) csvHistoryViewsLocked() []csvHistoryListView {
+	if len(s.csvHistory) == 0 {
+		return nil
+	}
+	views := make([]csvHistoryListView, 0, len(s.csvHistory))
+	for i := len(s.csvHistory) - 1; i >= 0; i-- {
+		e := s.csvHistory[i]
+		views = append(views, csvHistoryListView{
+			ID:        e.ID,
+			Timestamp: e.Timestamp.Format("2006-01-02 15:04:05"),
+			Target:    e.Target,
+			Passed:    e.Passed,
+			Total:     e.Total,
+		})
+	}
+	return views
+}
+
+// recordCSVHistory appends a just-built resultsView to the in-memory CSV
+// history as a lightweight csvHistoryEntry, evicting the oldest entry once
+// maxCSVHistoryEntries is exceeded. Unlike recordHistory (single-send),
+// there's no need to return a view list here: handleRunCSV renders the
+// results page next, not the index page, so the updated history only
+// matters the next time the index page is loaded (via pageDataLocked).
+func (s *Server) recordCSVHistory(view resultsView, target string) {
+	rows := make([]csvHistoryRow, len(view.Rows))
+	for i, rv := range view.Rows {
+		rows[i] = csvHistoryRow{
+			Index:        rv.Index,
+			Name:         rv.Name,
+			Status:       rv.Status,
+			OK:           rv.OK,
+			Duration:     rv.Duration,
+			Bytes:        rv.Bytes,
+			Values:       append([]string(nil), rv.Values...),
+			Err:          rv.Err,
+			TestsSummary: rv.TestsSummary,
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextCSVHistoryID++
+	s.csvHistory = append(s.csvHistory, csvHistoryEntry{
+		ID:         s.nextCSVHistoryID,
+		Timestamp:  time.Now(),
+		Target:     target,
+		Collection: view.Collection,
+		HasTests:   view.HasTests,
+		Columns:    append([]string(nil), view.Columns...),
+		Rows:       rows,
+		Passed:     view.Passed,
+		Total:      view.Total,
+	})
+	if len(s.csvHistory) > maxCSVHistoryEntries {
+		s.csvHistory = s.csvHistory[len(s.csvHistory)-maxCSVHistoryEntries:]
+	}
+}
+
+// csvHistoryJSONRow is the JSON shape of one row of a redisplayed CSV/
+// collection history entry, for the results page's "結果をダウンロード
+// (JSON)" button on GET /csv-history/{id}. It's a separate, self-contained
+// shape (not report.jsonResult) since the full runner.Result values behind a
+// history entry were never retained — only the lightweight csvHistoryRow
+// fields are available to encode.
+type csvHistoryJSONRow struct {
+	Index    int               `json:"index"`
+	Name     string            `json:"name,omitempty"`
+	Status   string            `json:"status"`
+	Ok       bool              `json:"ok"`
+	Duration string            `json:"duration"`
+	Bytes    int64             `json:"bytes"`
+	Row      map[string]string `json:"row,omitempty"`
+	Error    string            `json:"error"`
+	Tests    string            `json:"testsSummary,omitempty"`
+}
+
+// csvHistoryEntryToView reconstructs a resultsView from a stored
+// csvHistoryEntry, for redisplaying a past CSV/collection run
+// (GET /csv-history/{id}). Because the stored snapshot deliberately excludes
+// response headers/bodies (see csvHistoryRow), the redisplayed page won't
+// have a working per-row response detail expando even if issue #42 has
+// landed — an accepted tradeoff, not a bug.
+func csvHistoryEntryToView(e csvHistoryEntry) resultsView {
+	view := resultsView{
+		Columns:    append([]string(nil), e.Columns...),
+		Passed:     e.Passed,
+		Total:      e.Total,
+		Collection: e.Collection,
+		HasTests:   e.HasTests,
+	}
+
+	jsonRows := make([]csvHistoryJSONRow, len(e.Rows))
+	for i, hr := range e.Rows {
+		view.Rows = append(view.Rows, rowView{
+			Index:        hr.Index,
+			Name:         hr.Name,
+			Status:       hr.Status,
+			OK:           hr.OK,
+			Duration:     hr.Duration,
+			Bytes:        hr.Bytes,
+			Values:       hr.Values,
+			Err:          hr.Err,
+			TestsSummary: hr.TestsSummary,
+		})
+
+		row := make(map[string]string, len(e.Columns))
+		for j, col := range e.Columns {
+			if j < len(hr.Values) {
+				row[col] = hr.Values[j]
+			}
+		}
+		jsonRows[i] = csvHistoryJSONRow{
+			Index:    hr.Index,
+			Name:     hr.Name,
+			Status:   hr.Status,
+			Ok:       hr.OK,
+			Duration: hr.Duration,
+			Bytes:    hr.Bytes,
+			Row:      row,
+			Error:    hr.Err,
+			Tests:    hr.TestsSummary,
+		}
+	}
+	if b, err := json.Marshal(jsonRows); err == nil {
+		view.ResultsJSON = template.JS(b)
+	}
+	return view
+}
+
+// handleCSVHistoryShow implements GET /csv-history/{id}: it redisplays a
+// past CSV/collection run's results page from the stored lightweight
+// snapshot (see csvHistoryEntryToView). Unlike handleHistoryRestore (which
+// loads a past single-send entry back into the editable s.spec/s.env
+// state), this is read-only — it never touches s.spec/s.env. IDs are never
+// reused, so a link to an entry evicted by the maxCSVHistoryEntries cap
+// fails with a clear error instead of silently showing a different entry.
+func (s *Server) handleCSVHistoryShow(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		http.Redirect(w, r, "/?error="+url.QueryEscape("履歴のIDが不正です"), http.StatusSeeOther)
+		return
+	}
+
+	s.mu.Lock()
+	var found *csvHistoryEntry
+	for i := range s.csvHistory {
+		if s.csvHistory[i].ID == id {
+			found = &s.csvHistory[i]
+			break
+		}
+	}
+	var view resultsView
+	if found != nil {
+		view = csvHistoryEntryToView(*found)
+	}
+	view.RequestPath = s.RequestPath
+	view.EnvPath = s.EnvPath
+	s.mu.Unlock()
+
+	if found == nil {
+		http.Redirect(w, r, "/?error="+url.QueryEscape("その履歴は見つかりませんでした（保持件数の上限を超えて破棄された可能性があります）"), http.StatusSeeOther)
+		return
+	}
+	s.render(w, s.resultsTmpl, view)
+}
+
 func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model.RequestSpec, env map[string]string) {
 	renderErr := func(msg string) {
 		s.mu.Lock()
@@ -666,6 +921,7 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 		}
 
 		view.ColSpan = resultsColSpan(view)
+		s.recordCSVHistory(view, s.csvHistoryTarget())
 		s.render(w, s.resultsTmpl, view)
 		return
 	}
@@ -713,6 +969,7 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 	}
 
 	view.ColSpan = resultsColSpan(view)
+	s.recordCSVHistory(view, s.csvHistoryTarget())
 	s.render(w, s.resultsTmpl, view)
 }
 
