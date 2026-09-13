@@ -63,6 +63,132 @@ gp serve examples/request.yaml --env examples/env.yaml --port 8080
 - **環境変数編集・YAMLダウンロード** — 環境変数もブラウザ上で編集でき、編集中のリクエストはYAMLとしてダウンロードして`gp run`にそのまま使い回せる
 - **複数環境の切り替え** — `--env`にディレクトリを渡すと、直下の`*.yaml`/`*.yml`ファイル(拡張子を除いたファイル名が環境名になる)がそれぞれ1つの環境として読み込まれ、「環境変数」カードにドロップダウンが表示される。切り替えると`#env`の内容がその環境の変数に置き換わり、「この環境を保存」で編集内容を元のファイルに書き戻せる。単一ファイル(または未指定)の場合、この操作は表示されず従来どおり
 
+### 複数環境を切り替える(例)
+
+```sh
+mkdir -p envs
+cat > envs/dev.yaml  <<'EOF'
+base_url: https://dev.example.com
+EOF
+cat > envs/prod.yaml <<'EOF'
+base_url: https://jsonplaceholder.typicode.com
+EOF
+gp serve examples/request.yaml --env envs --port 8080
+```
+
+「環境変数」カードに`dev`/`prod`のドロップダウンが表示され、選ぶと`#env`の内容がそのファイルの変数に
+入れ替わる。切り替え自体はGETなので`curl`でも直接叩ける。
+
+```sh
+curl -s "http://localhost:8080/environment?name=prod" -o /dev/null -D - | head -1
+```
+```
+HTTP/1.1 303 See Other
+```
+
+### 送信履歴(例)
+
+単発送信するたびに履歴に記録され、トップ画面の「履歴」カードから過去のリクエストに一発で戻れる。
+
+```sh
+curl -s -X POST http://localhost:8080/execute \
+  -F "method=GET" -F "url=https://jsonplaceholder.typicode.com/users/1" \
+  -F "headers=" -F "body=" -F "env=" -F "action=send" -o /dev/null
+
+curl -s -D - http://localhost:8080/history/1 -o /dev/null | head -1
+```
+```
+HTTP/1.1 303 See Other
+```
+
+リダイレクト後の編集画面には、その時点のMethod/URL/Headers/Bodyがそのまま復元されている。
+
+### コレクションで複数リクエストを連続実行(例)
+
+`request-file`の代わりにディレクトリを渡すと、そのディレクトリ配下の`*.yaml`/`*.yml`ファイル群を
+コレクションとして扱える（フラットな一覧のみで、フォルダの入れ子には対応しない)。
+
+```sh
+mkdir -p my-collection
+cat > my-collection/get-user.yaml <<'EOF'
+method: GET
+url: "{{base_url}}/users/{{id}}"
+headers:
+  Accept: application/json
+EOF
+cat > my-collection/get-posts.yaml <<'EOF'
+method: GET
+url: "{{base_url}}/posts/{{id}}"
+headers:
+  Accept: application/json
+EOF
+
+gp serve my-collection --env examples/env.yaml
+```
+
+画面上部にコレクション内のリクエスト名一覧が表示され、選ぶとそのリクエストが編集画面に読み込まれる。
+編集中の内容は「名前を付けて保存」でコレクションディレクトリにYAMLとして保存・上書きできる。
+単一ファイルまたは無指定で起動した場合はこれまで通りで、コレクション機能は表示されない。
+
+コレクション(複数リクエスト)とCSVを組み合わせると、CSVの1行につきコレクション内の全リクエストを
+順番に実行する——コレクションをデータファイルで回す、という動き。CLIでも同じことができる。
+
+```sh
+gp run my-collection --data examples/users.csv --env examples/env.yaml
+```
+```
+#  REQUEST    STATUS         TIME  SIZE  id    ERROR
+1  get-posts  200 OK         50ms  292   1
+1  get-user   200 OK         15ms  509   1
+2  get-posts  200 OK         12ms  278   2
+2  get-user   200 OK         12ms  509   2
+3  get-posts  404 Not Found  13ms  2     9999
+3  get-user   404 Not Found  12ms  2     9999
+
+4/6 passed
+```
+
+`--iterations`はCSV全体をこの回数だけ繰り返す。2行のCSVで`--iterations 2`なら、行の順序は
+`1, 2, 9999, 1, 2, 9999`のように2周する(単一リクエストでもコレクションでも同じ挙動)。
+`gp serve`で実行する場合は、結果テーブルに「Request」列でどちらのリクエストの結果かが表示される。
+
+### 進捗表示・CSV実行履歴・行ごとの詳細(例)
+
+`gp serve`でのCSV/コレクション実行は非同期で行われる。フォーム送信は即座に進捗ページを返し、
+ブラウザはバックグラウンドで`GET /run-progress/{id}`をポーリングして完了件数を更新する。
+
+```sh
+curl -s -X POST http://localhost:8080/execute \
+  -F "method=GET" -F "url=x" -F "headers=" -F "body=" \
+  -F "env=base_url=https://jsonplaceholder.typicode.com" \
+  -F "action=run" -F "csv=@examples/users.csv" -o progress.html
+
+grep -o 'data-run-id="[0-9]*"' progress.html
+```
+```
+data-run-id="1"
+```
+```sh
+curl -s http://localhost:8080/run-progress/1
+```
+```json
+{"completed":2,"total":6,"done":false}
+```
+```json
+{"completed":6,"total":6,"done":true,"historyId":1}
+```
+
+`done`が`true`になると`historyId`が入り、ブラウザは自動的に`/csv-history/{id}`(結果画面)へ遷移する。
+このページは「CSV実行履歴」カードから後で見返すこともでき、各行は`<details>`で展開すると
+そのリクエストのレスポンスヘッダー・ボディを個別に確認できる(JS不要、ブラウザ標準機能)。
+
+```sh
+curl -s http://localhost:8080/csv-history/1 | grep -o '[0-9]/[0-9] passed'
+```
+```
+4/6 passed
+```
+
 ### JSON API (`/api/send`, `/api/run`)
 
 `gp serve`はブラウザ向けのHTML画面に加えて、スクリプトやAIエージェントから使うための
@@ -110,19 +236,6 @@ curl -X POST http://localhost:8080/api/run \
 
 いずれのエンドポイントも、リクエストボディ/フォームが不正な場合はHTMLではなく
 `{"error": "..."}`形式のJSONを400で返す。
-
-### コレクション
-
-`request-file`の代わりにディレクトリを渡すと、そのディレクトリ配下の`*.yaml`/`*.yml`ファイル群を
-コレクションとして扱える（フラットな一覧のみで、フォルダの入れ子には対応しない)。
-
-```sh
-gp serve ./my-collection/
-```
-
-画面上部にコレクション内のリクエスト名一覧が表示され、選ぶとそのリクエストが編集画面に読み込まれる。
-編集中の内容は「名前を付けて保存」でコレクションディレクトリにYAMLとして保存・上書きできる。
-単一ファイルまたは無指定で起動した場合はこれまで通りで、コレクション機能は表示されない。
 
 ## CLI (`gp run`)
 
