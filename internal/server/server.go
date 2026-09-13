@@ -535,6 +535,30 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 		return
 	}
 
+	iterations := 1
+	if v := strings.TrimSpace(r.FormValue("iterations")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			renderErr("反復回数は1以上の整数で指定してください")
+			return
+		}
+		iterations = n
+	}
+
+	delay := time.Duration(0)
+	if v := strings.TrimSpace(r.FormValue("delay")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			renderErr("遅延の形式が不正です（例: 500ms）: " + err.Error())
+			return
+		}
+		delay = d
+	}
+
+	stopOnError := r.FormValue("stop_on_error") != ""
+
+	opts := runner.RunOptions{Iterations: iterations, Delay: delay, StopOnError: stopOnError}
+
 	client := &http.Client{Timeout: s.Timeout}
 
 	if s.CollectionDir != "" {
@@ -548,7 +572,7 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 			specs[i] = runner.NamedSpec{Name: n.Name, Spec: n.Spec}
 		}
 
-		results := runner.RunCollection(client, specs, env, data.Rows)
+		results := runner.RunCollectionOpts(client, specs, env, data.Rows, opts)
 
 		view := resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results), Collection: true}
 		for _, cr := range results {
@@ -588,7 +612,7 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 		return
 	}
 
-	results := runner.Run(client, &spec, env, data.Rows)
+	results := runner.RunOpts(client, &spec, env, data.Rows, opts)
 
 	view := resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results)}
 	for i, res := range results {
