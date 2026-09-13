@@ -36,7 +36,7 @@ type TestResult struct {
 // runtime at all — the fast path for the overwhelming majority of requests
 // that don't use this feature.
 //
-// The script gets a "pm" object modeled loosely on Postman's test-script API:
+// The script gets a "pm" object exposing a small, purpose-built test API:
 //
 //   - pm.response.code (int), pm.response.status (string)
 //   - pm.response.body (string, the raw response body)
