@@ -17,6 +17,33 @@ type jsonResult struct {
 	Bytes      int64             `json:"bytes"`
 	Row        map[string]string `json:"row,omitempty"`
 	Error      string            `json:"error"`
+	// Tests holds the request's test_script results, if it has one. Omitted
+	// entirely (not even an empty array) when the request has no
+	// test_script, so JSON output for the common case is unchanged from
+	// before this field existed.
+	Tests []jsonTestResult `json:"tests,omitempty"`
+}
+
+// jsonTestResult is the JSON shape of one runner.TestResult.
+type jsonTestResult struct {
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Error  string `json:"error,omitempty"`
+}
+
+// testResultsToJSON converts a runner.TestResult slice into the
+// jsonTestResult shape shared by jsonResult and jsonCollectionResult. Returns
+// nil (which json.Marshal with omitempty renders as an absent field) for an
+// empty/nil input.
+func testResultsToJSON(results []runner.TestResult) []jsonTestResult {
+	if len(results) == 0 {
+		return nil
+	}
+	out := make([]jsonTestResult, len(results))
+	for i, t := range results {
+		out[i] = jsonTestResult{Name: t.Name, Passed: t.Passed, Error: t.Error}
+	}
+	return out
 }
 
 // resultsToJSON converts results into the jsonResult shape shared by
@@ -37,6 +64,7 @@ func resultsToJSON(results []runner.Result) []jsonResult {
 			Bytes:      r.Bytes,
 			Row:        r.Row,
 			Error:      errMsg,
+			Tests:      testResultsToJSON(r.TestResults),
 		}
 	}
 	return out
@@ -70,6 +98,9 @@ type jsonCollectionResult struct {
 	Bytes      int64             `json:"bytes"`
 	Row        map[string]string `json:"row,omitempty"`
 	Error      string            `json:"error"`
+	// Tests holds the request's test_script results, if it has one; see
+	// jsonResult.Tests.
+	Tests []jsonTestResult `json:"tests,omitempty"`
 }
 
 // collectionResultsToJSON converts results into the jsonCollectionResult
@@ -92,6 +123,7 @@ func collectionResultsToJSON(results []runner.CollectionResult) []jsonCollection
 			Bytes:      r.Bytes,
 			Row:        r.Row,
 			Error:      errMsg,
+			Tests:      testResultsToJSON(r.TestResults),
 		}
 	}
 	return out

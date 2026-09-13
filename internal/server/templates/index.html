@@ -155,6 +155,12 @@
     </table>
     <button type="button" class="secondary" id="body-kv-add-btn"><span class="icon">add</span>フィールドを追加</button>
   </div>
+
+  <div class="field">
+    <label for="test-script">Test Script（任意、JavaScript）</label>
+    <p class="meta">レスポンス検証用のJavaScript。<code>pm.test(name, fn)</code>で書く。<code>pm.response.code</code> / <code>pm.response.status</code> / <code>pm.response.body</code> / <code>pm.response.json()</code>、<code>pm.variables.get(name)</code>が使える</p>
+    <textarea id="test-script" name="test_script" rows="6">{{.TestScript}}</textarea>
+  </div>
 </div>
 
 <div class="card">
@@ -286,6 +292,16 @@
     </div>
   </div>
   <pre id="response-body">{{.SendResult.Body}}</pre>
+  {{if .SendResult.TestResults}}
+  <div class="field">
+    <label>Tests</label>
+    <ul class="test-results">
+      {{range .SendResult.TestResults}}
+      <li class="{{if .Passed}}ok{{else}}fail{{end}}"><span class="icon">{{if .Passed}}check_circle{{else}}cancel{{end}}</span>{{.Name}}{{if not .Passed}}: {{.Error}}{{end}}</li>
+      {{end}}
+    </ul>
+  </div>
+  {{end}}
   {{end}}
 </div>
 {{end}}

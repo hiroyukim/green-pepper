@@ -21,11 +21,27 @@ type Result struct {
 	Duration   time.Duration
 	Bytes      int64
 	Err        error
+	// TestResults holds the outcome of each pm.test(...) call from the
+	// request's test_script, if it has one. Empty/nil when the request has
+	// no test_script (the common case) — Ok() below is unaffected by
+	// TestResults in that case, so this is a behavior-preserving addition.
+	TestResults []TestResult
 }
 
-// Ok reports whether the request completed with a successful (2xx) status.
+// Ok reports whether the request completed with a successful (2xx) status
+// and, if it has a test_script, every one of its tests also passed. With no
+// test_script (TestResults empty), this is exactly the original status-code-
+// only check.
 func (r Result) Ok() bool {
-	return r.Err == nil && r.StatusCode >= 200 && r.StatusCode < 300
+	if r.Err != nil || r.StatusCode < 200 || r.StatusCode >= 300 {
+		return false
+	}
+	for _, t := range r.TestResults {
+		if !t.Passed {
+			return false
+		}
+	}
+	return true
 }
 
 // Run executes spec once for every row in rows, merging env as the default
@@ -210,14 +226,35 @@ func runOne(client *http.Client, spec *model.RequestSpec, vars, row map[string]s
 	}
 	defer resp.Body.Close()
 
-	n, _ := io.Copy(io.Discard, resp.Body)
+	if spec.TestScript == "" {
+		// Fast path, unchanged from before test scripts existed: the body
+		// isn't needed for anything, so just count its bytes.
+		n, _ := io.Copy(io.Discard, resp.Body)
+		return Result{
+			Row:        row,
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Duration:   duration,
+			Bytes:      n,
+		}
+	}
+
+	// The test script needs the actual body (for pm.response.body/json()),
+	// capped at maxTestScriptBody; anything beyond that is still drained (not
+	// left unread, which would prevent connection reuse) and counted towards
+	// Bytes so the reported size matches the fast path's.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxTestScriptBody))
+	extra, _ := io.Copy(io.Discard, resp.Body)
+
+	testResults := runTestScript(spec.TestScript, resp.StatusCode, resp.Status, body, vars)
 
 	return Result{
-		Row:        row,
-		StatusCode: resp.StatusCode,
-		Status:     resp.Status,
-		Duration:   duration,
-		Bytes:      n,
+		Row:         row,
+		StatusCode:  resp.StatusCode,
+		Status:      resp.Status,
+		Duration:    duration,
+		Bytes:       int64(len(body)) + extra,
+		TestResults: testResults,
 	}
 }
 
@@ -231,11 +268,25 @@ type SendResult struct {
 	Headers    http.Header
 	Body       []byte
 	Err        error
+	// TestResults holds the outcome of each pm.test(...) call from the
+	// request's test_script, if it has one. Empty/nil when the request has
+	// no test_script.
+	TestResults []TestResult
 }
 
-// Ok reports whether the request completed with a successful (2xx) status.
+// Ok reports whether the request completed with a successful (2xx) status
+// and, if it has a test_script, every one of its tests also passed. See
+// Result.Ok for the exact (behavior-preserving) semantics.
 func (r SendResult) Ok() bool {
-	return r.Err == nil && r.StatusCode >= 200 && r.StatusCode < 300
+	if r.Err != nil || r.StatusCode < 200 || r.StatusCode >= 300 {
+		return false
+	}
+	for _, t := range r.TestResults {
+		if !t.Passed {
+			return false
+		}
+	}
+	return true
 }
 
 // Send executes spec once against vars, capturing at most maxBody bytes of
@@ -259,11 +310,17 @@ func Send(client *http.Client, spec *model.RequestSpec, vars map[string]string, 
 		return SendResult{StatusCode: resp.StatusCode, Status: resp.Status, Duration: duration, Headers: resp.Header, Err: err}
 	}
 
+	var testResults []TestResult
+	if spec.TestScript != "" {
+		testResults = runTestScript(spec.TestScript, resp.StatusCode, resp.Status, body, vars)
+	}
+
 	return SendResult{
-		StatusCode: resp.StatusCode,
-		Status:     resp.Status,
-		Duration:   duration,
-		Headers:    resp.Header,
-		Body:       body,
+		StatusCode:  resp.StatusCode,
+		Status:      resp.Status,
+		Duration:    duration,
+		Headers:     resp.Header,
+		Body:        body,
+		TestResults: testResults,
 	}
 }
