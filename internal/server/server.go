@@ -37,6 +37,10 @@ const (
 	// row/collection request, so a single entry can be much larger than one
 	// single-send history entry.
 	maxCSVHistoryEntries = 20
+
+	// maxCSVRuns bounds memory for a long-running gp serve session's
+	// in-flight/finished async CSV/collection run tracking (issue #45).
+	maxCSVRuns = 20
 )
 
 var varPattern = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
@@ -88,11 +92,32 @@ type Server struct {
 	csvHistory       []csvHistoryEntry
 	nextCSVHistoryID int
 
+	// runs tracks in-flight (or just-finished) async CSV/collection runs
+	// started by handleRunCSV, polled by the browser via
+	// GET /run-progress/{id} (issue #45). nextRunID never resets or reuses
+	// IDs, and also (since IDs are assigned in increasing order) serves as
+	// the insertion-order key pruneRunsLocked uses to evict the oldest DONE
+	// entries once len(runs) exceeds maxCSVRuns.
+	runs      map[int]*csvRunProgress
+	nextRunID int
+
 	// Each page gets its own template set (layout.html + that page's
 	// content) so the "content" block each defines doesn't clash with
 	// the other page's block of the same name.
-	indexTmpl   *template.Template
-	resultsTmpl *template.Template
+	indexTmpl    *template.Template
+	resultsTmpl  *template.Template
+	progressTmpl *template.Template
+}
+
+// csvRunProgress tracks one in-flight (or just-finished) async CSV/
+// collection run started by handleRunCSV, polled by the browser via
+// GET /run-progress/{id} (issue #45).
+type csvRunProgress struct {
+	Completed int
+	Total     int
+	Done      bool
+	HistoryID int    // valid once Done; the /csv-history/{HistoryID} to redirect to
+	Err       string // non-empty only if something went wrong after the goroutine started
 }
 
 // New builds a Server, parsing the embedded HTML templates. spec and env are
@@ -109,14 +134,20 @@ func New(spec *model.RequestSpec, env map[string]string, requestPath, envPath st
 	if err != nil {
 		return nil, fmt.Errorf("parsing templates: %w", err)
 	}
+	progressTmpl, err := template.ParseFS(templateFS, "templates/layout.html", "templates/progress.html")
+	if err != nil {
+		return nil, fmt.Errorf("parsing templates: %w", err)
+	}
 	s := &Server{
-		RequestPath: requestPath,
-		EnvPath:     envPath,
-		Timeout:     timeout,
-		spec:        *spec,
-		env:         maps.Clone(env),
-		indexTmpl:   indexTmpl,
-		resultsTmpl: resultsTmpl,
+		RequestPath:  requestPath,
+		EnvPath:      envPath,
+		Timeout:      timeout,
+		spec:         *spec,
+		env:          maps.Clone(env),
+		indexTmpl:    indexTmpl,
+		resultsTmpl:  resultsTmpl,
+		progressTmpl: progressTmpl,
+		runs:         make(map[int]*csvRunProgress),
 	}
 	if envDir != nil {
 		s.envDir = envDir.Dir
@@ -141,6 +172,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /environment", s.handleSwitchEnv)
 	mux.HandleFunc("GET /history/{id}", s.handleHistoryRestore)
 	mux.HandleFunc("GET /csv-history/{id}", s.handleCSVHistoryShow)
+	mux.HandleFunc("GET /run-progress/{id}", s.handleRunProgress)
 	mux.HandleFunc("GET /collection/{name}", s.handleLoadFromCollection)
 	mux.HandleFunc("POST /api/send", s.handleAPISend)
 	mux.HandleFunc("POST /api/run", s.handleAPIRun)
@@ -664,11 +696,10 @@ func (s *Server) csvHistoryViewsLocked() []csvHistoryListView {
 
 // recordCSVHistory appends a just-built resultsView to the in-memory CSV
 // history as a lightweight csvHistoryEntry, evicting the oldest entry once
-// maxCSVHistoryEntries is exceeded. Unlike recordHistory (single-send),
-// there's no need to return a view list here: handleRunCSV renders the
-// results page next, not the index page, so the updated history only
-// matters the next time the index page is loaded (via pageDataLocked).
-func (s *Server) recordCSVHistory(view resultsView, target string) {
+// maxCSVHistoryEntries is exceeded, and returns the new entry's ID (issue
+// #45's async handleRunCSV redirects the browser to /csv-history/{id} once
+// the background run finishes).
+func (s *Server) recordCSVHistory(view resultsView, target string) int {
 	rows := make([]csvHistoryRow, len(view.Rows))
 	for i, rv := range view.Rows {
 		rows[i] = csvHistoryRow{
@@ -701,6 +732,7 @@ func (s *Server) recordCSVHistory(view resultsView, target string) {
 	if len(s.csvHistory) > maxCSVHistoryEntries {
 		s.csvHistory = s.csvHistory[len(s.csvHistory)-maxCSVHistoryEntries:]
 	}
+	return s.nextCSVHistoryID
 }
 
 // csvHistoryJSONRow is the JSON shape of one row of a redisplayed CSV/
@@ -811,6 +843,14 @@ func (s *Server) handleCSVHistoryShow(w http.ResponseWriter, r *http.Request) {
 	s.render(w, s.resultsTmpl, view)
 }
 
+// handleRunCSV implements the "CSVで実行" action: it validates the upload and
+// run options synchronously (exactly as before, same renderErr calls on bad
+// input), then launches the actual request execution in a background
+// goroutine and immediately responds with a progress page (issue #45). The
+// browser polls GET /run-progress/{id} for completion, then navigates itself
+// to the finished run's /csv-history/{id} page — the results/history/
+// row-detail rendering itself is completely unchanged, only how the run is
+// kicked off and observed is new.
 func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model.RequestSpec, env map[string]string) {
 	renderErr := func(msg string) {
 		s.mu.Lock()
@@ -854,123 +894,252 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 
 	stopOnError := r.FormValue("stop_on_error") != ""
 
-	// CaptureResponses is always true here (unlike CLI `gp run`, which never
-	// sets it): the results table lets each row expand into its response
-	// headers/body (issue #42).
-	opts := runner.RunOptions{Iterations: iterations, Delay: delay, StopOnError: stopOnError, CaptureResponses: true}
+	collectionRun := s.CollectionDir != ""
 
-	client := &http.Client{Timeout: s.Timeout}
-
-	if s.CollectionDir != "" {
+	// rowCount/total mirror buildRowSequence's own simple arithmetic (not
+	// called directly since it's unexported in another package): the number
+	// of rows actually executed may end up lower than this if StopOnError
+	// cuts the run short, which OnProgress's total parameter already
+	// accounts for.
+	rowCount := len(data.Rows)
+	if rowCount == 0 {
+		rowCount = 1
+	}
+	total := rowCount * iterations
+	var specs []runner.NamedSpec
+	if collectionRun {
 		named, err := model.LoadAllFromCollection(s.CollectionDir)
 		if err != nil {
 			renderErr("コレクションの読み込みに失敗しました: " + err.Error())
 			return
 		}
-		specs := make([]runner.NamedSpec, len(named))
+		specs = make([]runner.NamedSpec, len(named))
 		for i, n := range named {
 			specs[i] = runner.NamedSpec{Name: n.Name, Spec: n.Spec}
 		}
+		total = len(specs) * rowCount * iterations
+	}
 
-		results := runner.RunCollectionOpts(client, specs, env, data.Rows, opts)
+	s.mu.Lock()
+	s.nextRunID++
+	id := s.nextRunID
+	s.runs[id] = &csvRunProgress{Total: total}
+	s.mu.Unlock()
 
-		resultsJSON, err := report.CollectionResultsToJSON(results)
-		if err != nil {
-			renderErr("結果のJSON変換に失敗しました: " + err.Error())
-			return
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.mu.Lock()
+				if p := s.runs[id]; p != nil {
+					p.Done = true
+					p.Err = fmt.Sprintf("CSV実行中に予期しないエラーが発生しました: %v", rec)
+				}
+				s.mu.Unlock()
+			}
+		}()
+
+		// CaptureResponses is always true here (unlike CLI `gp run`, which
+		// never sets it): the results table lets each row expand into its
+		// response headers/body (issue #42).
+		opts := runner.RunOptions{
+			Iterations:       iterations,
+			Delay:            delay,
+			StopOnError:      stopOnError,
+			CaptureResponses: true,
+			OnProgress: func(completed, total int) {
+				s.mu.Lock()
+				if p := s.runs[id]; p != nil {
+					p.Completed = completed
+					p.Total = total
+				}
+				s.mu.Unlock()
+			},
 		}
 
-		view := resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results), Collection: true, ResultsJSON: template.JS(resultsJSON)}
-		for _, cr := range results {
-			res := cr.Result
-			if res.Ok() {
-				view.Passed++
+		client := &http.Client{Timeout: s.Timeout}
+
+		var view resultsView
+		if collectionRun {
+			results := runner.RunCollectionOpts(client, specs, env, data.Rows, opts)
+
+			resultsJSON, err := report.CollectionResultsToJSON(results)
+			if err != nil {
+				s.mu.Lock()
+				if p := s.runs[id]; p != nil {
+					p.Done = true
+					p.Err = "結果のJSON変換に失敗しました: " + err.Error()
+				}
+				s.mu.Unlock()
+				return
 			}
-			if len(res.TestResults) > 0 {
-				view.HasTests = true
+
+			view = resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results), Collection: true, ResultsJSON: template.JS(resultsJSON)}
+			for _, cr := range results {
+				res := cr.Result
+				if res.Ok() {
+					view.Passed++
+				}
+				if len(res.TestResults) > 0 {
+					view.HasTests = true
+				}
+				status := res.Status
+				if status == "" {
+					status = "-"
+				}
+				errMsg := ""
+				if res.Err != nil {
+					errMsg = res.Err.Error()
+				}
+				values := make([]string, len(data.Columns))
+				for j, col := range data.Columns {
+					values[j] = res.Row[col]
+				}
+				view.Rows = append(view.Rows, rowView{
+					// Index is the 1-based iteration (CSV row) number,
+					// matching report.PrintCollection's "#" column: it
+					// repeats across the requests belonging to the same row
+					// rather than counting each execution.
+					Index:        cr.RowIndex + 1,
+					Name:         cr.Name,
+					Status:       status,
+					OK:           res.Ok(),
+					Duration:     res.Duration.Round(time.Millisecond).String(),
+					Bytes:        res.Bytes,
+					Values:       values,
+					Err:          errMsg,
+					TestsSummary: report.TestsSummary(res.TestResults),
+					Headers:      headerViews(res.Headers),
+					Body:         string(res.Body),
+				})
 			}
-			status := res.Status
-			if status == "" {
-				status = "-"
+		} else {
+			results := runner.RunOpts(client, &spec, env, data.Rows, opts)
+
+			resultsJSON, err := report.ResultsToJSON(results)
+			if err != nil {
+				s.mu.Lock()
+				if p := s.runs[id]; p != nil {
+					p.Done = true
+					p.Err = "結果のJSON変換に失敗しました: " + err.Error()
+				}
+				s.mu.Unlock()
+				return
 			}
-			errMsg := ""
-			if res.Err != nil {
-				errMsg = res.Err.Error()
+
+			view = resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results), ResultsJSON: template.JS(resultsJSON)}
+			for i, res := range results {
+				if res.Ok() {
+					view.Passed++
+				}
+				if len(res.TestResults) > 0 {
+					view.HasTests = true
+				}
+				status := res.Status
+				if status == "" {
+					status = "-"
+				}
+				errMsg := ""
+				if res.Err != nil {
+					errMsg = res.Err.Error()
+				}
+				values := make([]string, len(data.Columns))
+				for j, col := range data.Columns {
+					values[j] = res.Row[col]
+				}
+				view.Rows = append(view.Rows, rowView{
+					Index:        i + 1,
+					Status:       status,
+					OK:           res.Ok(),
+					Duration:     res.Duration.Round(time.Millisecond).String(),
+					Bytes:        res.Bytes,
+					Values:       values,
+					Err:          errMsg,
+					TestsSummary: report.TestsSummary(res.TestResults),
+					Headers:      headerViews(res.Headers),
+					Body:         string(res.Body),
+				})
 			}
-			values := make([]string, len(data.Columns))
-			for j, col := range data.Columns {
-				values[j] = res.Row[col]
-			}
-			view.Rows = append(view.Rows, rowView{
-				// Index is the 1-based iteration (CSV row) number, matching
-				// report.PrintCollection's "#" column: it repeats across the
-				// requests belonging to the same row rather than counting
-				// each execution.
-				Index:        cr.RowIndex + 1,
-				Name:         cr.Name,
-				Status:       status,
-				OK:           res.Ok(),
-				Duration:     res.Duration.Round(time.Millisecond).String(),
-				Bytes:        res.Bytes,
-				Values:       values,
-				Err:          errMsg,
-				TestsSummary: report.TestsSummary(res.TestResults),
-				Headers:      headerViews(res.Headers),
-				Body:         string(res.Body),
-			})
 		}
 
 		view.ColSpan = resultsColSpan(view)
-		s.recordCSVHistory(view, s.csvHistoryTarget())
-		s.render(w, s.resultsTmpl, view)
-		return
+		historyID := s.recordCSVHistory(view, s.csvHistoryTarget())
+
+		s.mu.Lock()
+		if p := s.runs[id]; p != nil {
+			p.Done = true
+			p.HistoryID = historyID
+		}
+		s.pruneRunsLocked()
+		s.mu.Unlock()
+	}()
+
+	s.render(w, s.progressTmpl, progressView{RunID: id})
+}
+
+// pruneRunsLocked evicts the oldest DONE entries from s.runs once it exceeds
+// maxCSVRuns, bounding memory for a long-running gp serve session (issue
+// #45). In-progress runs are never evicted. IDs are assigned in strictly
+// increasing order, so the lowest IDs are always the oldest. Callers must
+// hold s.mu.
+func (s *Server) pruneRunsLocked() {
+	for len(s.runs) > maxCSVRuns {
+		oldestID := 0
+		for id, p := range s.runs {
+			if !p.Done {
+				continue
+			}
+			if oldestID == 0 || id < oldestID {
+				oldestID = id
+			}
+		}
+		if oldestID == 0 {
+			return // nothing evictable left (every remaining run is in-progress)
+		}
+		delete(s.runs, oldestID)
 	}
+}
 
-	results := runner.RunOpts(client, &spec, env, data.Rows, opts)
+// progressView renders the progress page for one async CSV/collection run
+// (issue #45).
+type progressView struct {
+	RunID int
+}
 
-	resultsJSON, err := report.ResultsToJSON(results)
+// runProgressJSON is the GET /run-progress/{id} JSON response shape, polled
+// by the progress page's inline script.
+type runProgressJSON struct {
+	Completed int    `json:"completed"`
+	Total     int    `json:"total"`
+	Done      bool   `json:"done"`
+	HistoryID int    `json:"historyId,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// handleRunProgress implements GET /run-progress/{id}: it reports the
+// current progress of an async CSV/collection run started by handleRunCSV,
+// as JSON (this endpoint is polled by fetch(), never by a browser
+// navigation, so every response — including "not found" — is JSON, never an
+// HTML error page, mirroring the /api/send and /api/run convention).
+func (s *Server) handleRunProgress(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
-		renderErr("結果のJSON変換に失敗しました: " + err.Error())
+		writeAPIError(w, http.StatusNotFound, "invalid run id")
 		return
 	}
 
-	view := resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results), ResultsJSON: template.JS(resultsJSON)}
-	for i, res := range results {
-		if res.Ok() {
-			view.Passed++
-		}
-		if len(res.TestResults) > 0 {
-			view.HasTests = true
-		}
-		status := res.Status
-		if status == "" {
-			status = "-"
-		}
-		errMsg := ""
-		if res.Err != nil {
-			errMsg = res.Err.Error()
-		}
-		values := make([]string, len(data.Columns))
-		for j, col := range data.Columns {
-			values[j] = res.Row[col]
-		}
-		view.Rows = append(view.Rows, rowView{
-			Index:        i + 1,
-			Status:       status,
-			OK:           res.Ok(),
-			Duration:     res.Duration.Round(time.Millisecond).String(),
-			Bytes:        res.Bytes,
-			Values:       values,
-			Err:          errMsg,
-			TestsSummary: report.TestsSummary(res.TestResults),
-			Headers:      headerViews(res.Headers),
-			Body:         string(res.Body),
-		})
+	s.mu.Lock()
+	p, ok := s.runs[id]
+	var resp runProgressJSON
+	if ok {
+		resp = runProgressJSON{Completed: p.Completed, Total: p.Total, Done: p.Done, HistoryID: p.HistoryID, Error: p.Err}
 	}
+	s.mu.Unlock()
 
-	view.ColSpan = resultsColSpan(view)
-	s.recordCSVHistory(view, s.csvHistoryTarget())
-	s.render(w, s.resultsTmpl, view)
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, fmt.Sprintf("unknown run id %d", id))
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, resp)
 }
 
 // resultsColSpan returns the total number of columns the results table

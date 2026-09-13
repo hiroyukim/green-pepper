@@ -99,6 +99,12 @@ type RunOptions struct {
 	// this to true so its results table can show per-row response detail
 	// (issue #42).
 	CaptureResponses bool
+	// OnProgress, when non-nil, is called after each individual request
+	// execution completes, with the number completed so far and the total
+	// that will be attempted (which may end up higher than what actually
+	// runs, if StopOnError cuts the run short). nil (the default, and what
+	// gp run's CLI path always uses) means no callback overhead at all.
+	OnProgress func(completed, total int)
 }
 
 // buildRowSequence expands rows into the effective, in-order sequence of rows
@@ -135,6 +141,9 @@ func RunOpts(client *http.Client, spec *model.RequestSpec, env map[string]string
 		}
 		res := runOne(client, spec, mergeVars(env, row), row, opts.CaptureResponses)
 		results = append(results, res)
+		if opts.OnProgress != nil {
+			opts.OnProgress(i+1, len(seq))
+		}
 		if opts.StopOnError && !res.Ok() {
 			break
 		}
@@ -200,6 +209,9 @@ outer:
 				Name:     ns.Name,
 				Result:   res,
 			})
+			if opts.OnProgress != nil {
+				opts.OnProgress(n, len(specs)*len(seq))
+			}
 			if opts.StopOnError && !res.Ok() {
 				break outer
 			}
