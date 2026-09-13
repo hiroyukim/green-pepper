@@ -245,6 +245,32 @@
 </div>
 {{end}}
 
+{{if .CSVHistory}}
+<div class="card">
+  <h2><span class="icon">history</span>CSV実行履歴</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>日時</th>
+        <th>対象</th>
+        <th>結果</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .CSVHistory}}
+      <tr>
+        <td>{{.Timestamp}}</td>
+        <td style="max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{.Target}}</td>
+        <td>{{.Passed}}/{{.Total}} passed</td>
+        <td><a href="/csv-history/{{.ID}}">表示</a></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
 <div class="actions">
   <button type="submit" name="action" value="send"><span class="icon">send</span>単発送信</button>
   <button type="submit" name="action" value="run" class="secondary"><span class="icon">play_arrow</span>CSVで実行</button>
