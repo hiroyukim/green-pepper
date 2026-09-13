@@ -20,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"green-pepper/internal/model"
+	"green-pepper/internal/report"
 	"green-pepper/internal/runner"
 )
 
@@ -550,7 +551,13 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 
 		results := runner.RunCollection(client, specs, env, data.Rows)
 
-		view := resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results), Collection: true}
+		resultsJSON, err := report.CollectionResultsToJSON(results)
+		if err != nil {
+			renderErr("結果のJSON変換に失敗しました: " + err.Error())
+			return
+		}
+
+		view := resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results), Collection: true, ResultsJSON: template.JS(resultsJSON)}
 		for _, cr := range results {
 			res := cr.Result
 			if res.Ok() {
@@ -590,7 +597,13 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 
 	results := runner.Run(client, &spec, env, data.Rows)
 
-	view := resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results)}
+	resultsJSON, err := report.ResultsToJSON(results)
+	if err != nil {
+		renderErr("結果のJSON変換に失敗しました: " + err.Error())
+		return
+	}
+
+	view := resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results), ResultsJSON: template.JS(resultsJSON)}
 	for i, res := range results {
 		if res.Ok() {
 			view.Passed++
@@ -645,6 +658,21 @@ type resultsView struct {
 	// rather than a single request template. The results template shows
 	// an extra "Request" column only in that case.
 	Collection bool
+
+	// ResultsJSON is the same results, JSON-encoded (see
+	// report.ResultsToJSON / report.CollectionResultsToJSON), for the
+	// "結果をダウンロード(JSON)" button (issue #36). It's embedded verbatim
+	// as the body of a <script type="application/json"> element rather than
+	// through a normal {{.}} string interpolation: html/template treats
+	// application/json script bodies as a JS context (see
+	// html/template's isJSType), so a plain string field would be
+	// re-encoded as a quoted+escaped JS string literal instead of being
+	// written as-is. template.JS opts out of that re-encoding; it's safe
+	// here specifically because encoding/json's default Marshal behavior
+	// HTML-escapes '<', '>' and '&' in string values (e.g. "<" becomes
+	// "<"), so the encoded bytes can never contain a literal
+	// "</script" that would break out of the tag.
+	ResultsJSON template.JS
 }
 
 type rowView struct {
