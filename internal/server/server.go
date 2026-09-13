@@ -536,6 +536,58 @@ func (s *Server) handleRunCSV(w http.ResponseWriter, r *http.Request, spec model
 	}
 
 	client := &http.Client{Timeout: s.Timeout}
+
+	if s.CollectionDir != "" {
+		named, err := model.LoadAllFromCollection(s.CollectionDir)
+		if err != nil {
+			renderErr("コレクションの読み込みに失敗しました: " + err.Error())
+			return
+		}
+		specs := make([]runner.NamedSpec, len(named))
+		for i, n := range named {
+			specs[i] = runner.NamedSpec{Name: n.Name, Spec: n.Spec}
+		}
+
+		results := runner.RunCollection(client, specs, env, data.Rows)
+
+		view := resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results), Collection: true}
+		for _, cr := range results {
+			res := cr.Result
+			if res.Ok() {
+				view.Passed++
+			}
+			status := res.Status
+			if status == "" {
+				status = "-"
+			}
+			errMsg := ""
+			if res.Err != nil {
+				errMsg = res.Err.Error()
+			}
+			values := make([]string, len(data.Columns))
+			for j, col := range data.Columns {
+				values[j] = res.Row[col]
+			}
+			view.Rows = append(view.Rows, rowView{
+				// Index is the 1-based iteration (CSV row) number, matching
+				// report.PrintCollection's "#" column: it repeats across the
+				// requests belonging to the same row rather than counting
+				// each execution.
+				Index:    cr.RowIndex + 1,
+				Name:     cr.Name,
+				Status:   status,
+				OK:       res.Ok(),
+				Duration: res.Duration.Round(time.Millisecond).String(),
+				Bytes:    res.Bytes,
+				Values:   values,
+				Err:      errMsg,
+			})
+		}
+
+		s.render(w, s.resultsTmpl, view)
+		return
+	}
+
 	results := runner.Run(client, &spec, env, data.Rows)
 
 	view := resultsView{RequestPath: s.RequestPath, EnvPath: s.EnvPath, Columns: data.Columns, Total: len(results)}
@@ -587,10 +639,20 @@ type resultsView struct {
 	Rows        []rowView
 	Passed      int
 	Total       int
+
+	// Collection is true when this run executed every request in a
+	// collection directory (see Server.CollectionDir) once per CSV row,
+	// rather than a single request template. The results template shows
+	// an extra "Request" column only in that case.
+	Collection bool
 }
 
 type rowView struct {
-	Index    int
+	Index int
+	// Name is the collection entry name this row's request came from; only
+	// meaningful (and only rendered) when the enclosing resultsView.
+	// Collection is true.
+	Name     string
 	Status   string
 	OK       bool
 	Duration string

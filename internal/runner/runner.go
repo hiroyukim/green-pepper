@@ -42,6 +42,51 @@ func Run(client *http.Client, spec *model.RequestSpec, env map[string]string, ro
 	return results
 }
 
+// NamedSpec pairs a request template with its display name (a collection
+// entry's filename without extension), for running multiple requests per
+// CSV row ("iteration").
+type NamedSpec struct {
+	Name string
+	Spec *model.RequestSpec
+}
+
+// CollectionResult is the outcome of one named request within one iteration
+// (CSV row, or the single implicit iteration when there's no CSV) of a
+// collection run.
+type CollectionResult struct {
+	RowIndex int
+	Row      map[string]string
+	Name     string
+	Result   Result
+}
+
+// RunCollection executes every spec in specs, in order, once per row in rows
+// (or once with an empty row if rows is empty — same convention as Run),
+// merging env as the default variable set per row exactly like Run does.
+// Results are ordered iteration-by-iteration: all of specs for row 1, then
+// all of specs for row 2, etc. — this is the deterministic order the issue
+// asks for (specs themselves should already be sorted by name by the
+// caller, e.g. via model.ListCollection's sorted output).
+func RunCollection(client *http.Client, specs []NamedSpec, env map[string]string, rows []map[string]string) []CollectionResult {
+	if len(rows) == 0 {
+		rows = []map[string]string{{}}
+	}
+
+	results := make([]CollectionResult, 0, len(specs)*len(rows))
+	for rowIdx, row := range rows {
+		vars := mergeVars(env, row)
+		for _, ns := range specs {
+			results = append(results, CollectionResult{
+				RowIndex: rowIdx,
+				Row:      row,
+				Name:     ns.Name,
+				Result:   runOne(client, ns.Spec, vars, row),
+			})
+		}
+	}
+	return results
+}
+
 func mergeVars(env, row map[string]string) map[string]string {
 	vars := make(map[string]string, len(env)+len(row))
 	maps.Copy(vars, env)

@@ -9,6 +9,7 @@
     <thead>
       <tr>
         <th>#</th>
+        {{if .Collection}}<th>Request</th>{{end}}
         <th>Status</th>
         <th>Time</th>
         <th>Size</th>
@@ -20,6 +21,7 @@
       {{range .Rows}}
       <tr>
         <td>{{.Index}}</td>
+        {{if $.Collection}}<td>{{.Name}}</td>{{end}}
         <td class="{{if .OK}}ok{{else}}fail{{end}}"><span class="icon">{{if .OK}}check_circle{{else}}cancel{{end}}</span>{{.Status}}</td>
         <td>{{.Duration}}</td>
         <td>{{.Bytes}}</td>
