@@ -7,7 +7,43 @@
 CSVを使った大量データでの繰り返し実行も、同じ画面から行える。コマンドラインからも同じことができるので、
 CIに組み込んで自動テストの一部として使うこともできる。
 
-## Build
+## 目次
+
+- [インストール](#インストール)
+  - [ビルド済みバイナリを使う](#ビルド済みバイナリを使う)
+  - [ソースからビルドする](#ソースからビルドする)
+- [3分でわかる`gp serve`](#3分でわかるgp-serve)
+- [Web UI (`gp serve`) — 詳しいリファレンス](#web-ui-gp-serve--詳しいリファレンス)
+  - [複数環境を切り替える(例)](#複数環境を切り替える例)
+  - [送信履歴(例)](#送信履歴例)
+  - [コレクションで複数リクエストを連続実行(例)](#コレクションで複数リクエストを連続実行例)
+  - [進捗表示・CSV実行履歴・行ごとの詳細(例)](#進捗表示csv実行履歴行ごとの詳細例)
+  - [JSON API (`/api/send`, `/api/run`)](#json-api-apisend-apirun)
+- [CLI (`gp run`)](#cli-gp-run)
+  - [Example](#example)
+- [テストスクリプト (`test_script`)](#テストスクリプト-test_script)
+  - [デバッグ出力 (`console.log`)](#デバッグ出力-consolelog)
+- [License](#license)
+
+## インストール
+
+### ビルド済みバイナリを使う
+
+[Releases](https://github.com/hiroyukim/green-pepper/releases)からOS/アーキテクチャに合った
+アーカイブをダウンロードして展開すればよい(linux/darwin/windows × amd64/arm64)。
+
+```sh
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+url=$(curl -s https://api.github.com/repos/hiroyukim/green-pepper/releases/latest \
+  | grep -o "https://[^\"]*green-pepper_[^\"]*_${os}_${arch}.tar.gz")
+curl -sL "$url" | tar xz gp
+./gp --help
+```
+
+Windowsの場合はReleasesページから`_windows_`のzipを直接ダウンロードする。
+
+### ソースからビルドする
 
 ```sh
 go build -o gp .
@@ -388,14 +424,6 @@ test_script: |
 記録された出力は`gp run --format json`（および`gp serve`のJSONエクスポート）の`logs`フィールドに配列として入る
 （表形式`table`には出ない）。`gp serve`では単発送信のレスポンス画面にも「コンソール出力」として表示される。
 CSV/コレクション実行の各行での表示は今のところ対象外。
-
-## Releases
-
-`v*` 形式のタグをpushすると、GitHub Actions ([goreleaser](https://goreleaser.com/)) が
-linux/darwin/windows × amd64/arm64 のバイナリをビルドし、GitHub Releaseに自動でアップロードする
-([.github/workflows/release.yml](.github/workflows/release.yml))。
-
-ビルド済みバイナリは [Releases](https://github.com/hiroyukim/green-pepper/releases) から取得できる。
 
 ## License
 
