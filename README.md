@@ -38,7 +38,15 @@ arch=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 url=$(curl -s https://api.github.com/repos/hiroyukim/green-pepper/releases/latest \
   | grep -o "https://[^\"]*green-pepper_[^\"]*_${os}_${arch}.tar.gz")
 curl -sL "$url" | tar xz gp
-./gp --help
+sudo install -m 0755 gp /usr/local/bin/gp
+gp --help
+```
+
+`/usr/local/bin`は多くの環境で標準的にPATHが通っている。別の場所に置きたい場合は、そのディレクトリを
+`PATH`に追加する。
+
+```sh
+export PATH="$HOME/bin:$PATH"
 ```
 
 Windowsの場合はReleasesページから`_windows_`のzipを直接ダウンロードする。
@@ -54,7 +62,7 @@ go build -o gp .
 ### 1. 起動してブラウザを開く
 
 ```sh
-./gp serve examples/request.yaml --env examples/env.yaml --port 8080
+gp serve examples/request.yaml --env examples/env.yaml --port 8080
 ```
 
 `http://localhost:8080` を開くと、Method・URL・Headersなどを入力する画面が表示される。難しい設定は不要で、
