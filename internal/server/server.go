@@ -629,6 +629,17 @@ type csvHistoryRow struct {
 	Values       []string
 	Err          string
 	TestsSummary string
+	// Headers and Body carry this row's captured response detail (issue
+	// #42) through to the history redisplay. Since GET /csv-history/{id}
+	// (via handleCSVHistoryShow) is now the *only* place a CSV/collection
+	// run's results page is ever rendered — handleRunCSV responds with the
+	// progress page instead (issue #45) — omitting these here would make
+	// the per-row detail expando permanently unreachable. Already bounded
+	// by runner.maxRowDetailBody per row and maxCSVHistoryEntries overall,
+	// the same caps that already applied before #45 removed the
+	// synchronous render.
+	Headers []headerView
+	Body    string
 }
 
 // csvHistoryEntry is one past CSV/collection run, holding just enough to
@@ -712,6 +723,8 @@ func (s *Server) recordCSVHistory(view resultsView, target string) int {
 			Values:       append([]string(nil), rv.Values...),
 			Err:          rv.Err,
 			TestsSummary: rv.TestsSummary,
+			Headers:      append([]headerView(nil), rv.Headers...),
+			Body:         rv.Body,
 		}
 	}
 
@@ -755,10 +768,9 @@ type csvHistoryJSONRow struct {
 
 // csvHistoryEntryToView reconstructs a resultsView from a stored
 // csvHistoryEntry, for redisplaying a past CSV/collection run
-// (GET /csv-history/{id}). Because the stored snapshot deliberately excludes
-// response headers/bodies (see csvHistoryRow), the redisplayed page won't
-// have a working per-row response detail expando even if issue #42 has
-// landed — an accepted tradeoff, not a bug.
+// (GET /csv-history/{id}) — the only place this ever gets rendered, since
+// issue #45. Includes each row's captured response detail (issue #42) so
+// the per-row expando keeps working through the history-based redisplay.
 func csvHistoryEntryToView(e csvHistoryEntry) resultsView {
 	view := resultsView{
 		Columns:    append([]string(nil), e.Columns...),
@@ -780,6 +792,8 @@ func csvHistoryEntryToView(e csvHistoryEntry) resultsView {
 			Values:       hr.Values,
 			Err:          hr.Err,
 			TestsSummary: hr.TestsSummary,
+			Headers:      hr.Headers,
+			Body:         hr.Body,
 		})
 
 		row := make(map[string]string, len(e.Columns))
@@ -803,6 +817,7 @@ func csvHistoryEntryToView(e csvHistoryEntry) resultsView {
 	if b, err := json.Marshal(jsonRows); err == nil {
 		view.ResultsJSON = template.JS(b)
 	}
+	view.ColSpan = resultsColSpan(view)
 	return view
 }
 
