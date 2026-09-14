@@ -3,8 +3,9 @@
 [![CI](https://github.com/hiroyukim/green-pepper/actions/workflows/ci.yml/badge.svg)](https://github.com/hiroyukim/green-pepper/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-軽量なAPIクライアント。ブラウザ上でリクエストを組み立てて送る`gp serve`と、
-1つのリクエストテンプレートをCSVの各行で変数展開しながら繰り返し実行する`gp run`の2つの使い方がある。
+ブラウザでAPIリクエストを組み立てて送れる、軽量なAPIクライアント。普段の1回きりのリクエストも、
+CSVを使った大量データでの繰り返し実行も、同じ画面から行える。コマンドラインからも同じことができるので、
+CIに組み込んで自動テストの一部として使うこともできる。
 
 ## Build
 
@@ -12,16 +13,44 @@
 go build -o gp .
 ```
 
-## 使ってみる
+## 3分でわかる`gp serve`
 
-`gp serve`を起動し、サンプルのCSVファイルを実際にアップロードして実行してみる。
+### 1. 起動してブラウザを開く
 
 ```sh
-./gp serve examples/request.yaml --env examples/env.yaml --port 8080 &
+./gp serve examples/request.yaml --env examples/env.yaml --port 8080
 ```
 
-ブラウザで`http://localhost:8080`を開いてCSVファイルを選び「CSVで実行」を押してもいいし、`curl`で
-`gp serve`のフォーム送信先(`POST /execute`)に直接CSVをPOSTすることもできる。
+`http://localhost:8080` を開くと、Method・URL・Headersなどを入力する画面が表示される。難しい設定は不要で、
+上から順に埋めていくだけでよい。
+
+![リクエストビルダーの画面。Method/URL/Authorization/Query Params/Headers/Body/Test Scriptを入力するフォームと、環境変数・CSV実行のカードが並ぶ](docs/images/request-builder.png)
+
+### 2. 「単発送信」でまず1回試す
+
+右下の「単発送信」ボタンを押すと、その場でリクエストが1回実行される。レスポンスはステータス・ヘッダー・
+ボディまでその場で確認でき、JSONならきれいに整形&色付けして表示される(`Test Script`欄に検証コードを
+書いておけば、ここに合否も一緒に出る)。
+
+![レスポンス画面。ステータス200 OK、整形されたJSONボディ、2件のテスト結果(緑のチェックマーク)が表示されている](docs/images/response-viewer.png)
+
+### 3. CSVをアップロードしてまとめて実行する
+
+「CSVで一括実行」カードにCSVファイルをドラッグ&ドロップ(またはクリックして選択)すると、行数や列名を
+事前にプレビューできる。「CSVで実行」を押すと、CSVの行数ぶんだけ同じリクエストを繰り返し実行する。
+
+![CSVで一括実行カード。ドラッグ&ドロップ領域、反復回数・リクエスト間の遅延・失敗時に停止の入力欄](docs/images/csv-upload.png)
+
+### 4. 進捗を見ながら待ち、結果を確認する
+
+実行中は完了件数のプログレスバーが表示され、終わると自動的に結果画面に切り替わる。各行の「詳細を見る」を
+押すと、その行のレスポンスヘッダー・ボディも個別に確認できる。
+
+![実行中のプログレスバー。「実行中...」の文字と「2 / 3 件完了」の表示](docs/images/progress-bar.png)
+
+![CSV実行結果のテーブル。行ごとにステータス・時間・テスト結果が並び、「詳細を見る」を展開するとレスポンスヘッダー・ボディが表示されている](docs/images/results-detail.png)
+
+ここまでの操作は`curl`だけでも再現できる(自動化やCIから直接叩きたい場合はこちら)。
 
 ```sh
 curl -X POST http://localhost:8080/execute \
@@ -34,10 +63,10 @@ curl -X POST http://localhost:8080/execute \
   -F "csv=@examples/users.csv"
 ```
 
-`gp run`と同じ結果テーブルがHTMLとして返ってくる(`2/3 passed`など)。スクリプトやAIエージェントから
-JSONで結果を受け取りたい場合は、`gp run --format json`か後述の[`POST /api/run`](#json-api-apisend-apirun)を使う。
+スクリプトやAIエージェントから直接JSONで結果を受け取りたい場合は、`gp run --format json`か後述の
+[`POST /api/run`](#json-api-apisend-apirun)を使うとよい。
 
-## Web UI (`gp serve`)
+## Web UI (`gp serve`) — 詳しいリファレンス
 
 ```sh
 gp serve [request-file|collection-dir] [--env <env-file|env-dir>] [--port <port>] [--timeout <duration>]
