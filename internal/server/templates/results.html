@@ -50,24 +50,5 @@
 </div>
 <p><a href="/"><span class="icon">arrow_back</span>編集画面に戻る</a></p>
 <script type="application/json" id="results-json">{{.ResultsJSON}}</script>
-<script>
-(function () {
-  var downloadBtn = document.getElementById('results-download-btn');
-  var dataEl = document.getElementById('results-json');
-  if (!downloadBtn || !dataEl) return;
-
-  downloadBtn.addEventListener('click', function () {
-    var text = dataEl.textContent;
-    var blob = new Blob([text], { type: 'application/json' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = 'results.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(function () { URL.revokeObjectURL(url); }, 0);
-  });
-})();
-</script>
+<script type="module" src="/static/results.js"></script>
 {{end}}

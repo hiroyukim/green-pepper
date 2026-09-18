@@ -53,9 +53,16 @@ Windowsの場合はReleasesページから`_windows_`のzipを直接ダウンロ
 
 ### ソースからビルドする
 
+`gp serve`のWeb UI（JS/CSS、アイコンフォント）は[frontend/](frontend/)以下の別プロジェクトとして
+実装されており、`npm run build`の成果物を`internal/server/static/dist`に出力し、
+`go build`が`go:embed`でバイナリに埋め込む。ソースからビルドする際は先にこちらを実行する。
+
 ```sh
+cd frontend && npm ci && npm run build && cd ..
 go build -o gp .
 ```
+
+`frontend/src`以下を変更しない限り、`npm run build`をやり直す必要はない。
 
 ## 3分でわかる`gp serve`
 

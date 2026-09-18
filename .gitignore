@@ -1,2 +1,9 @@
 /gp
 /dist/
+
+# Frontend build tooling/output — see frontend/README or CLAUDE.md for the
+# `npm run build` step that populates internal/server/static/dist, which
+# internal/server/server.go embeds via go:embed.
+/frontend/node_modules/
+/internal/server/static/dist/*
+!/internal/server/static/dist/.gitkeep

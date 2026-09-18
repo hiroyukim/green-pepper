@@ -1,0 +1,14 @@
+{
+  "name": "green-pepper-frontend",
+  "private": true,
+  "type": "module",
+  "description": "Frontend assets for `gp serve`, bundled and embedded into the gp binary via go:embed (see ../internal/server/static/dist).",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "material-symbols": "^0.47.4"
+  }
+}

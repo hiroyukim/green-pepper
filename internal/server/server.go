@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"maps"
 	"net/http"
 	"net/url"
@@ -26,6 +27,14 @@ import (
 
 //go:embed templates/*.html
 var templateFS embed.FS
+
+// staticFS holds the built frontend (JS/CSS/fonts) from ../../frontend, run
+// through `npm run build` into static/dist (see frontend/build.mjs). It must
+// be built before `go build`/`go test` — a fresh checkout has only
+// static/dist/.gitkeep, which embeds fine but serves no assets.
+//
+//go:embed all:static/dist
+var staticFS embed.FS
 
 const (
 	maxUploadSize      = 10 << 20 // 10 MiB
@@ -166,7 +175,16 @@ func New(spec *model.RequestSpec, env map[string]string, requestPath, envPath st
 
 // Handler returns the http.Handler serving the UI.
 func (s *Server) Handler() http.Handler {
+	staticContent, err := fs.Sub(staticFS, "static/dist")
+	if err != nil {
+		// Unreachable: "static/dist" is a directory embed.FS.Sub can always
+		// descend into, since the go:embed directive above requires it to
+		// exist at build time.
+		panic(err)
+	}
+
 	mux := http.NewServeMux()
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticContent)))
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("POST /execute", s.handleExecute)
 	mux.HandleFunc("GET /environment", s.handleSwitchEnv)

@@ -2,6 +2,7 @@ version: 2
 
 before:
   hooks:
+    - sh -c "cd frontend && npm ci && npm run build"
     - go mod tidy
 
 builds:

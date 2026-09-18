@@ -5,45 +5,5 @@
   <p class="meta" id="run-progress-status">0 / 0 件完了</p>
   <div id="run-progress-error"></div>
 </div>
-<script>
-(function () {
-  var card = document.getElementById('progress-card');
-  var bar = document.getElementById('run-progress');
-  var status = document.getElementById('run-progress-status');
-  var errorBox = document.getElementById('run-progress-error');
-  var runId = card.getAttribute('data-run-id');
-
-  function poll() {
-    fetch('/run-progress/' + encodeURIComponent(runId))
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        var total = data.total || 0;
-        var completed = data.completed || 0;
-        bar.max = total > 0 ? total : 1;
-        bar.value = completed;
-        status.textContent = completed + ' / ' + total + ' 件完了';
-
-        if (data.done) {
-          if (data.error) {
-            errorBox.innerHTML = '<div class="error-box"><span class="icon">error</span>' +
-              String(data.error).replace(/[&<>"']/g, function (c) {
-                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-              }) + '</div>';
-            return;
-          }
-          window.location.href = '/csv-history/' + data.historyId;
-          return;
-        }
-
-        setTimeout(poll, 400);
-      })
-      .catch(function () {
-        // Transient network hiccup: keep polling rather than giving up.
-        setTimeout(poll, 400);
-      });
-  }
-
-  poll();
-})();
-</script>
+<script type="module" src="/static/progress.js"></script>
 {{end}}

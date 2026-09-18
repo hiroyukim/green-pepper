@@ -20,6 +20,15 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The frontend itself is built by .goreleaser.yaml's before.hooks (npm
+      # ci && npm run build), which runs as part of the goreleaser-action step
+      # below; Node just needs to already be on PATH by then.
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
