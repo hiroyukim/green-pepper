@@ -75,11 +75,13 @@ gp serve examples/request.yaml --env examples/env.yaml --port 8080
 `http://localhost:8080` を開くと、Method・URL・Headersなどを入力する画面が表示される。難しい設定は不要で、
 上から順に埋めていくだけでよい。
 
-![リクエストビルダーの画面。Method/URL/Authorization/Query Params/Headers/Body/Test Scriptを入力するフォームと、環境変数・CSV実行のカードが並ぶ](docs/images/request-builder.png)
+![gp serveのリクエストビルダー画面。cURLインポート欄、Method/URL、Authorizationなどを入力するフォームの先頭部分](docs/images/request-builder.png)
 
 ### 2. 「単発送信」でまず1回試す
 
-右下の「単発送信」ボタンを押すと、その場でリクエストが1回実行される。レスポンスはステータス・ヘッダー・
+`examples/request.yaml`のURLは`{{base_url}}/users/{{id}}`で、`id`はCSVの各行が渡す想定の変数
+なので、まだ環境変数には入っていない。CSVを使わずに1回だけ試したい場合は、URL欄の`{{id}}`を
+`1`のような具体的な値に書き換えてから「単発送信」ボタンを押す。レスポンスはステータス・ヘッダー・
 ボディまでその場で確認でき、JSONならきれいに整形&色付けして表示される(`Test Script`欄に検証コードを
 書いておけば、ここに合否も一緒に出る)。
 
@@ -93,7 +95,7 @@ gp serve examples/request.yaml --env examples/env.yaml --port 8080
 先頭数行がその場でプレビューされる。文字化けしていないか、想定した列がそろっているかをここで確認できる。
 テンプレート変数がCSV・環境変数のどちらにもカバーされていない場合は警告も出る。
 
-![CSVで一括実行カード。ドラッグ&ドロップ領域、反復回数・リクエスト間の遅延・失敗時に停止の入力欄](docs/images/csv-upload.png)
+![CSVで一括実行カード。CSVファイルをドロップした直後のプレビュー(列名・行数)と、反復回数・リクエスト間の遅延・失敗時に停止の入力欄](docs/images/csv-upload.png)
 
 ### 4. 「CSVで実行」して進捗を見ながら待つ
 
